@@ -12,7 +12,7 @@ API/licenseAPI.lua
 API/orderAPI.lua
 API/saveAPI.lua
 API/timeAPI.lua
-API/tutorial.lua
+API/tutorialAPI.lua
 API/backgroundAPI.lua
 API/stageAPI.lua
 API/levelAPI.lua
