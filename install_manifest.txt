@@ -4,7 +4,7 @@ API/craftAPI.lua
 API/economyAPI.lua
 API/eventAPI.lua
 API/guideAPI.lua
-API/guideData/lua
+API/guideData.lua
 API/inventoryAPI.lua
 API/itemsAPI.lua
 API/jobsAPI.lua
