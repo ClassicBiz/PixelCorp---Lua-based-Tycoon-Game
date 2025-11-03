@@ -1,34 +1,39 @@
 -- TycoonGame Main Loader - CC:Tweaked + Basalt
 -- Single bgFrame for background + title + dots
 -- Uses Basalt frame threads (addThread():start(function() ... end))
-
-local basalt = require("/API/basalt")
+local function getRoot()
+    local dir = fs.getDir(shell.getRunningProgram())
+    if dir == "" then return "/" end
+    return "/"..dir
+end
+local root = getRoot()
+local basalt = require("/PixelCorp/API/basalt")
 
 -- APIs
-local timeAPI = require("/API/timeAPI")
-local saveAPI = require("/API/saveAPI")
-local backgroundAPI = require("/API/backgroundAPI")
+local timeAPI = require(root.."/API/timeAPI")
+local saveAPI = require(root.."/API/saveAPI")
+local backgroundAPI = require(root.."/API/backgroundAPI")
 
 local SCREEN_WIDTH, SCREEN_HEIGHT = term.getSize()
 local GAME_TITLE = "Pixel Corp"
 local GROUND_Y = 12  -- ground row for walking dots
 
 -- Ensure save folders
-if not fs.exists("/saves/") then fs.makeDir("/saves/") end
-if not fs.exists("/saves/profiles") then fs.makeDir("/saves/profiles") end
+if not fs.exists(root.."/saves/") then fs.makeDir(root.."/saves/") end
+if not fs.exists(root.."/saves/profiles") then fs.makeDir(root.."/saves/profiles") end
 
 local function _archiveProfileAndClearActive(profileName)
   local slot   = profileName or "profile1"
   if saveAPI and saveAPI.setProfile then saveAPI.setProfile(slot) end
 
-  local base   = "/saves/profiles"
+  local base   = root.."/saves/profiles"
   if not fs.exists(base) then fs.makeDir(base) end
 
   local committed = fs.combine(base, slot .. ".json")
   local archived  = fs.combine(base, slot .. "_old.json")
   if fs.exists(archived) then fs.delete(archived) end
   if fs.exists(committed) then fs.move(committed, archived) end
-  if fs.exists("/saves/active.json") then fs.delete("/saves/active.json") end
+  if fs.exists(root.."/saves/active.json") then fs.delete(root.."/saves/active.json") end
 end
 
 -- 3x5 glyphs used for the title
@@ -102,18 +107,18 @@ end
 
 -- Backgrounds
 local BG_LIST = {
-  "/assets/screen.nfp",   -- title scene (no customers)
-  "/assets/lemon.nfp",    -- lemonade stand
-  "/assets/office.nfp",   -- office
-  "/assets/factory.nfp",  -- factory
+  root.."/assets/screen.nfp",   -- title scene (no customers)
+  root.."/assets/lemon.nfp",    -- lemonade stand
+  root.."/assets/office.nfp",   -- office
+  root.."/assets/factory.nfp",  -- factory
 }
 
 -- Per-background animation config
 local BG_CFG = {
-  ["/assets/screen.nfp"]  = { spawn = "none",  targetX = nil, targetY = nil },
-  ["/assets/lemon.nfp"]   = { spawn = "right", targetX = 14,  targetY = GROUND_Y },
-  ["/assets/office.nfp"]  = { spawn = "right", targetX = 17,  targetY = GROUND_Y },
-  ["/assets/factory.nfp"] = { spawn = "right", targetX = 23,  targetY = GROUND_Y },
+  [root.."/assets/screen.nfp"]  = { spawn = "none",  targetX = nil, targetY = nil },
+  [root.."/assets/lemon.nfp"]   = { spawn = "right", targetX = 14,  targetY = GROUND_Y },
+  [root.."/assets/office.nfp"]  = { spawn = "right", targetX = 17,  targetY = GROUND_Y },
+  [root.."/assets/factory.nfp"] = { spawn = "right", targetX = 23,  targetY = GROUND_Y },
 }
 
 -- Defer helper so button clicks are single-tap
@@ -156,7 +161,7 @@ local function loadMainMenu()
   local function bootGame()
     running = false
     stopUIAndRun(function()
-      shell.run("game/mainLoop.lua")
+      shell.run(root.."/game/mainLoop.lua")
     end)
   end
 
