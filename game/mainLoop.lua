@@ -1,22 +1,34 @@
 -- version 0.1.7 [0.1-2.1-9 = lemon Stage, 0.2-4.1-9 = warehouse Stage, 0.4-6.1-9 = factory Stage, 0.6-8.1-9 = tower Stage, 0.8.9 - 1.0.0 = QoL, fixes, bugSmashing, touchUps, animations, additional features. 1.0.0 + = restructuring additional challenges, modding? ]
 
-local basalt = require("/API/basalt")
-local timeAPI = require("/API/timeAPI")
-local saveAPI = require("/API/saveAPI")
-local eventAPI = require("/API/eventAPI")
-local licenseAPI = require("/API/licenseAPI")
-local economyAPI = require("/API/economyAPI")
-local levelAPI = require("/API/levelAPI")
-local inventoryAPI = require("/API/inventoryAPI")
-local jobsAPI = require("/API/jobsAPI")
-local backgroundAPI = require("/API/backgroundAPI")
-local stageAPI = require("/API/stageAPI")
-local craftAPI = require("/API/craftAPI")
-local itemsAPI   = require("/API/itemsAPI")
-local upgradeAPI = require("/API/upgradeAPI")
-local tutorialAPI = require("/API/tutorialAPI")
-local guideAPI = require("/API/guideAPI")
-local guideData = require("/API/guideData")
+
+local function getRoot()
+    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+    local rootPos = string.find(fullPath, "/PixelCorp")
+    if rootPos then
+        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+    end
+    if fs.exists("/PixelCorp") then return "/PixelCorp" end
+    return fullPath
+end
+local root = getRoot()
+local basalt = require(root.."/API/basalt")
+local timeAPI = require(root.."/API/timeAPI")
+local saveAPI = require(root.."/API/saveAPI")
+local eventAPI = require(root.."/API/eventAPI")
+local licenseAPI = require(root.."/API/licenseAPI")
+local economyAPI = require(root.."/API/economyAPI")
+local levelAPI = require(root.."/API/levelAPI")
+local inventoryAPI = require(root.."/API/inventoryAPI")
+local jobsAPI = require(root.."/API/jobsAPI")
+local backgroundAPI = require(root.."/API/backgroundAPI")
+local stageAPI = require(root.."/API/stageAPI")
+local craftAPI = require(root.."/API/craftAPI")
+local itemsAPI   = require(root.."/API/itemsAPI")
+local upgradeAPI = require(root.."/API/upgradeAPI")
+local tutorialAPI = require(root.."/API/tutorialAPI")
+local guideAPI = require(root.."/API/guideAPI")
+local guideData = require(root.."/API/guideData")
 
 -- seed RNG once (real UTC seconds)
 pcall(function()
@@ -219,11 +231,6 @@ topBar:addButton()
         refreshInventoryTabs()
         selectInventoryTab("Crafting")
         inventoryOverlay:show()
-        pcall(function()
-          if tutorialAPI and tutorialAPI.hit then
-            tutorialAPI.hit("nav:craft")
-          end
-        end)
     end)
 
 
@@ -375,80 +382,112 @@ if stageAPI and stageAPI.refreshBackground then
 end
 
 -- Cached Page Backgrounds (each page gets its own painted frame)
-local pageBackgrounds = {}   
-local allBackgroundsLoaded = false
-local currentPage = nil
+local pageBackgrounds = {}
+local activeBgKey     = nil
 
-
-local function collectBackgroundItems()
-    local items = {}
-    local stageFolder = "assets/stages"
-
-    -- Try to auto-scan stage images
-    if fs.exists(stageFolder) then
-        for _, p in ipairs(backgroundAPI.listImages(stageFolder)) do
-            local base = fs.getName(p):gsub("%.nfp$", "")
-            table.insert(items, { pageName = base, path = p })
-        end
-    else
-        -- fallback: if no subfolder, include only distinct .nfp files under /assets
-        local seen = {}
-        for _, p in ipairs(backgroundAPI.listImages("assets")) do
-            if not seen[p] then
-                seen[p] = true
-                local base = fs.getName(p):gsub("%.nfp$", "")
-                table.insert(items, { pageName = base, path = p })
-            end
-        end
-    end
-
-    table.sort(items, function(a,b) return a.pageName < b.pageName end)
-    return items
+local function normalizeKey(s)
+  s = (s or ""):lower()
+  -- strip common suffixes/plurals/spaces/underscores
+  s = s:gsub("%.nfp$", "") :gsub("[_%s%-]+","")
+  s = s:gsub("stage","") :gsub("page","")
+  s = s:gsub("background","") :gsub("backdrop","")
+  -- unify obvious variants
+  if s == "lemonade" then s = "lemon" end
+  return s
 end
 
--- Preload only stage backgrounds once 
+-- if you have known canonical mappings, put them here
+local STAGE_IMAGE_MAP = {
+  -- stage/page name (any form) -> image key
+  lemonade = "lemon",
+  lemon    = "lemon",
+  intro    = "title",
+  default  = "lemon",     -- fallback choice
+}
+
+local function resolveImageKey(name)
+  local n = normalizeKey(name)
+  -- explicit table mapping wins
+  if STAGE_IMAGE_MAP[n] then return STAGE_IMAGE_MAP[n] end
+  -- otherwise use normalized directly
+  return n
+end
+
+local function collectBackgroundItems()
+  local items = {}
+  local assetsDir = fs.combine(root, "assets")
+  if fs.exists(assetsDir) and fs.isDir(assetsDir) then
+    for _, p in ipairs(backgroundAPI.listImages(assetsDir)) do
+      local base = fs.getName(p):gsub("%.nfp$", "")
+      table.insert(items, { key = normalizeKey(base), path = p })
+    end
+  end
+  table.sort(items, function(a,b) return a.key < b.key end)
+  return items
+end
+
+local function showBackgroundKey(key)
+  if activeBgKey and pageBackgrounds[activeBgKey] then
+    pageBackgrounds[activeBgKey]:hide()
+  end
+  local f = pageBackgrounds[key]
+  if f then
+    f:show()
+    activeBgKey = key
+  end
+end
+
+local function showBackgroundFor(name)
+  showBackgroundKey(resolveImageKey(name))
+end
+
+-- call this once during load
 local function initStageBackgroundsCached()
-    local items = collectBackgroundItems()
-    local total = #items
-    if total == 0 then
-        progressBar:setProgress(100)
-        progressLabel:setText("loading.. 100%")
-        allBackgroundsLoaded = true
-        return
-    end
-
-    for i, it in ipairs(items) do
-        local stageName, path = it.pageName, it.path
-        loadingLabel:setText(("Loading: %s (%d/%d)"):format(fs.getName(path), i, total))
-
-        backgroundAPI.preload(path)
-
-        local bgFrame = displayFrame:addFrame()
-            :setSize(SCREEN_WIDTH, SCREEN_HEIGHT - 1)
-            :setPosition(1, 1)
-            :setZIndex(0)
-            :hide()
-
-        backgroundAPI.setCachedBackground(bgFrame, path)
-        pageBackgrounds[stageName] = bgFrame
-
-        local pct = math.floor((i / total) * 100)
-        progressBar:setProgress(pct)
-        progressLabel:setText("loading.. "..pct .. "%")
-        os.sleep(0.5)
-    end
-
+  local items = collectBackgroundItems()
+  local total = #items
+  if total == 0 then
+    progressBar:setProgress(100)
+    progressLabel:setText("loading.. 100%")
     allBackgroundsLoaded = true
-    loadingLabel:setText("All stage backgrounds loaded!")
-    loadingFrame:hide()
-    topBar:show()
-    displayFrame:show()
-    sidebar:show()
-    pcall(function()
-      if tutorialAPI and tutorialAPI.startIfNeeded then
-        tutorialAPI.startIfNeeded(displayFrame)
-      end
-    end)
+    return
+  end
+
+  for i, it in ipairs(items) do
+    local key, path = it.key, it.path
+    loadingLabel:setText(("Loading: %s (%d/%d)"):format(path, i, total))
+
+    backgroundAPI.preload(path)
+
+    local bgFrame = displayFrame:addFrame()
+      :setSize(SCREEN_WIDTH, SCREEN_HEIGHT - 1)
+      :setPosition(1, 1)
+      :setZIndex(0)  -- keep under content, over base
+      :hide()
+
+    backgroundAPI.setCachedBackground(bgFrame, path)
+    pageBackgrounds[key] = bgFrame
+
+    local pct = math.floor((i / total) * 100)
+    progressBar:setProgress(pct)
+    progressLabel:setText("loading.. "..pct.."%")
+    os.sleep(0)
+  end
+
+  allBackgroundsLoaded = true
+  loadingLabel:setText("All stage backgrounds loaded!")
+  loadingFrame:hide()
+  topBar:show()
+  displayFrame:show()
+  sidebar:show()
+
+  -- Pick initial bg based on your current stage/page:
+  local initialName =
+      (stageAPI and stageAPI.getStageName and stageAPI.getStageName())
+      or currentPage
+      or "default"
+
+  showBackgroundFor(initialName)
+
 end
 
 local function _inventoryMap()
@@ -1394,7 +1433,7 @@ pauseMenu:addButton()
     :setForeground(colors.black)
     :onClick(function()
         basalt.stop()
-        shell.run("PixelCorp")
+        shell.run(root.."/PixelCorp")
     end)
 
 
@@ -1995,11 +2034,6 @@ local function switchPage(pageName)
   pageBackgrounds[currentPage]:hide()
   end
   if pageName == "Licenses" then 
-        pcall(function()
-      if tutorialAPI and tutorialAPI.hit then
-        tutorialAPI.hit("nav:" .. tostring(pageName))
-      end
-    end)
   end
 
   if pageName == "stock" then rebuildStockPage() end
