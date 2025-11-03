@@ -1,7 +1,19 @@
 -- licenseAPI.lua - Manages business licenses and progression gates
 
 local licenseAPI = {}
-local saveAPI = require("/API/saveAPI")
+
+local function getRoot()
+    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+    local rootPos = string.find(fullPath, "/PixelCorp")
+    if rootPos then
+        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+    end
+    if fs.exists("/PixelCorp") then return "/PixelCorp" end
+    return fullPath
+end
+local root = getRoot()
+local saveAPI = require(root.."/API/saveAPI")
 
 -- All licenses in the game
 licenseAPI.licenses = {
