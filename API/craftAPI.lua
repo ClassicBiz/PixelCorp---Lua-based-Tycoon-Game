@@ -1,11 +1,23 @@
 local craftAPI = {}
-local inventoryAPI = require("/API/inventoryAPI")
-local economyAPI = require("/API/economyAPI")
-local itemsAPI = require("/API/itemsAPI")
-local saveAPI = require("/API/saveAPI")
-local stageAPI = require("/API/stageAPI")
-local levelAPI = require("/API/levelAPI")
-local upgradeAPI = require("/API/upgradeAPI")
+
+local function getRoot()
+    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+    local rootPos = string.find(fullPath, "/PixelCorp")
+    if rootPos then
+        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+    end
+    if fs.exists("/PixelCorp") then return "/PixelCorp" end
+    return fullPath
+end
+local root = getRoot()
+local inventoryAPI = require(root.."/API/inventoryAPI")
+local economyAPI = require(root.."/API/economyAPI")
+local itemsAPI = require(root.."/API/itemsAPI")
+local saveAPI = require(root.."/API/saveAPI")
+local stageAPI = require(root.."/API/stageAPI")
+local levelAPI = require(root.."/API/levelAPI")
+local upgradeAPI = require(root.."/API/upgradeAPI")
 
 local RARITY_ORDER = { "common","uncommon","rare","unique","legendary","mythical","relic","masterwork","divine" }
 local _ridx = {}; for i,r in ipairs(RARITY_ORDER) do _ridx[r]=i end
