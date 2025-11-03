@@ -1,4 +1,4 @@
--- version 0.1.7 [0.1-2.1-9 = lemon Stage, 0.2-4.1-9 = warehouse Stage, 0.4-6.1-9 = factory Stage, 0.6-8.1-9 = tower Stage, 0.8.9 - 1.0.0 = QoL, fixes, bugSmashing, touchUps, animations, additional features. 1.0.0 + = restructuring additional challenges, modding? ]
+-- version 0.1.9 [0.1-2.1-9 = lemon Stage, 0.2-4.1-9 = warehouse Stage, 0.4-6.1-9 = factory Stage, 0.6-8.1-9 = tower Stage, 0.8.9 - 1.0.0 = QoL, fixes, bugSmashing, touchUps, animations, additional features. 1.0.0 + = restructuring additional challenges, modding? ]
 
 
 local function getRoot()
@@ -29,11 +29,10 @@ local upgradeAPI = require(root.."/API/upgradeAPI")
 local tutorialAPI = require(root.."/API/tutorialAPI")
 local guideAPI = require(root.."/API/guideAPI")
 local guideData = require(root.."/API/guideData")
+local uiAPI = require(root.."/API/uiAPI")
 
--- seed RNG once (real UTC seconds)
 pcall(function()
   math.randomseed(os.epoch("utc") % 2^31)
-  -- throw away a few first draws for better entropy
   for i=1,3 do math.random() end
 end)
 
@@ -47,9 +46,22 @@ local function safeText(str, maxLen)
 end
 
 
+-- Build shared UI
+local UI = uiAPI.createBaseLayout()
 
 
--- Constants
+local mainFrame      = UI
+                     and UI.mainFrame
+                     or mainFrame
+local topBar         = UI and UI.topBar or topBar
+local pauseMenu      = UI and UI.pauseMenu or pauseMenu
+local sidebar        = UI and UI.sidebar or sidebar
+local displayFrame   = UI and UI.displayFrame or displayFrame
+local inventoryOverlay = UI and UI.inventoryOverlay or inventoryOverlay
+
+local _setLoading = function(text, pct) pcall(function() uiAPI.setLoading(text, pct) end) end
+local _hideLoading = function() pcall(function() uiAPI.hideLoading() end) end
+
 local SCREEN_WIDTH, SCREEN_HEIGHT = term.getSize()
 
 -- Stage Definitions
@@ -61,16 +73,14 @@ local STAGES = {
     highrise = { name = "High-Rise Corporation" }
 }
 
--- Page backgrounds removed (stage-driven bg only)
-
--- Main UI Setup
-local mainFrame = basalt.createFrame():setSize(SCREEN_WIDTH, SCREEN_HEIGHT)
-local timeThread = mainFrame:addThread() -- Background thread for time updates
+-- Main UI Setup (owned by uiAPI)
+local mainFrame = mainFrame
+local timeThread = mainFrame:addThread()
 
 guideAPI.init(mainFrame)
 guideAPI.setData(guideData)
 
--- Map progress id to stage art key
+
 local function progressToStage(progress)
     if progress == "lemonade_stand" then return "lemonade"
     elseif progress == "warehouse"   then return "office"
@@ -78,43 +88,6 @@ local function progressToStage(progress)
     elseif progress == "highrise"    then return "tower"
     else return "base" end
 end
-
-
-
-
--- Loading Screen
-local loadingFrame = mainFrame:addFrame():show()
-    :setSize(SCREEN_WIDTH, SCREEN_HEIGHT)
-    :setPosition(1, 1)
-    :setBackground(colors.lightGray)
-    :setZIndex(100)
-
--- Pre-calculate positions for the loading label and progress bar
-local labelWidth = 24 -- Approximate width of "Loading Backgrounds..."
-local labelX = math.floor((SCREEN_WIDTH - labelWidth) / 2) -- Center the label
-local labelY = math.floor(SCREEN_HEIGHT / 2) - 1 -- One line above the center
-
-local progressBarWidth = 25
-local progressBarX = math.floor((SCREEN_WIDTH - progressBarWidth) / 2) -- Center the progress bar
-local progressBarY = math.floor(SCREEN_HEIGHT / 2) -- Center vertically
-
-local loadingLabel = loadingFrame:addLabel()
-    :setText("Loading Backgrounds...")
-    :setPosition(labelX-8, labelY)
-    :setForeground(colors.white)
-
-local progressLabel = loadingFrame:addLabel()
-    :setText("Loading 0%")
-    :setPosition(20,labelY+4)
-    :setForeground(colors.white)
-
-local progressBar = loadingFrame:addProgressbar()
-    :setDirection(0)
-    :setPosition(progressBarX, progressBarY)
-    :setSize(progressBarWidth, 1)
-    :setProgressBar(colors.blue, " ") 
-    :setBackground(colors.gray)
-    :setProgress(0)
 
 local function wipe(frame) frame:removeChildren() end
 local function mkHeader(tab)
@@ -128,31 +101,13 @@ local function mkRow(tab, y, name, qty, value, color)
     tab:addLabel():setPosition(34, y):setSize(6, 1):setText(tostring(qty or 0)):setTextAlign("right")
 end
 
--- overlay container
-local inventoryOverlay = mainFrame:addMovableFrame()
-    :setSize(42, 16)
-    :setPosition((SCREEN_WIDTH - 40) / 2, 3)
-    :setBackground(colors.lightGray)
-    :setZIndex(45)
-    :hide()
+local inventoryOverlay = inventoryOverlay
 
-inventoryOverlay:addLabel():setText("Inventory"):setPosition(2, 1)
-
--- close button (kept)
-inventoryOverlay:addButton()
-    :setText(" x ")
-    :setPosition(40, 1)
-    :setSize(3, 1)
-    :setBackground(colors.red)
-    :setForeground(colors.white)
-    :onClick(function() inventoryOverlay:hide() end)
-
--- Menubar tabs (kept) + frames per tab
+-- Menubar tabs
 local inventoryTabs = {}
 
 _lastProductChoice = _lastProductChoice or "Lemonade"
 
--- Robust tab selection helpers (handle index OR label from Menubar:onChange)
 local TAB_ORDER = { "Materials", "Products", "Crafting", "All" }
 
 local function selectInventoryTab(name)
@@ -205,217 +160,53 @@ local tabBar = inventoryOverlay:addMenubar()
     :addItem(" Crafting")
     :addItem(" All ")
 
--- === Top bar (kept) ===
-local topBar = mainFrame:addFrame()
-    :setSize(SCREEN_WIDTH, 3)
-    :setPosition(1, 1)
-    :setBackground(colors.gray)
-    :hide()
-
-topBar:addButton()
-    :setText("[ INV ]")
-    :setPosition( 35, 3)
-    :setSize(6, 1)
-    :onClick(function()
-        showInventoryOverlay()
-            --selectInventoryTab("Materials")
-    end)
-
-topBar:addButton()
-    :setBackground(colors.orange)
-    :setForeground(colors.black)
-    :setText("[ CRAFT ]")
-    :setPosition(42, 3)
-    :setSize(9, 1)
-    :onClick(function()
-        refreshInventoryTabs()
-        selectInventoryTab("Crafting")
-        inventoryOverlay:show()
-    end)
-
-
-
-local timeLabel = topBar:addLabel()
-    :setText("Time: Initializing...")
-    :setPosition(2, 1)
-
-local moneyLabel = topBar:addLabel()
-    :setText("Money: $0")
-    :setPosition(25, 2)
-
-local stageLabel = topBar:addLabel()
-    :setText("Stage: Unknown")
-    :setPosition(25, 1)
-
-    -- ===== Level HUD (below top bar) =====
-local levelLabel = topBar:addLabel()
-  :setText("lvl 1")
-  :setPosition(1, 3)
-  :setForeground(colors.lightGray)
-
-local levelBarLabel = topBar:addLabel()
-  :setText("|----------| 0%")
-  :setPosition(7, 3)
-  :setForeground(colors.blue)
-
-
--- Pause Button
-local previousSpeed = "normal" -- Store the speed before pausing
-topBar:addButton()
-    :setText("Pause")
-    :setPosition(SCREEN_WIDTH - 50, 2)
-    :setSize(6, 1)
-    :setBackground(colors.red)
-    :setForeground(colors.white)
-    :onClick(function()
-        previousSpeed = timeAPI.getSpeed()
-        timeAPI.setSpeed("pause")
-        TICK_INTERVAL = nil
-        updateSpeedButtonColors()
-        showPauseMenu()
-    end)
-
--- Time Control Buttons
-local speedButtons = {}
-function updateSpeedButtonColors()
-    local currentSpeed = timeAPI.getSpeed()
-    for mode, btn in pairs(speedButtons) do
-        if mode == currentSpeed then
-            if mode == "pause" then
-                btn:setBackground(colors.red)
-            elseif mode == "normal" then
-                btn:setBackground(colors.green)
-            elseif mode == "2x" then
-                btn:setBackground(colors.blue)
-            elseif mode == "4x" then
-                btn:setBackground(colors.orange)
-            end
-            btn:setForeground(colors.white)
-        else
-            btn:setBackground(colors.lightGray)
-            btn:setForeground(colors.gray)
-        end
-    end
-end
-
-
-    speedButtons["pause"] = topBar:addButton()
-        :setText("II")
-        :setPosition(SCREEN_WIDTH - 44, 2)
-        :setSize(4, 1)
-        :onClick(function()
-            timeAPI.setSpeed("pause")
-            TICK_INTERVAL = nil
-            updateSpeedButtonColors()
-        end)
-
-    speedButtons["normal"] = topBar:addButton()
-        :setText(">")
-        :setPosition(SCREEN_WIDTH - 40, 2)
-        :setSize(4, 1)
-        :onClick(function()
-            timeAPI.setSpeed("normal")
-            TICK_INTERVAL = 1
-            updateSpeedButtonColors()
-        end)
-
-    speedButtons["2x"] = topBar:addButton()
-        :setText(">>")
-        :setPosition(SCREEN_WIDTH - 36, 2)
-        :setSize(4, 1)
-        :onClick(function()
-            timeAPI.setSpeed("2x")
-            TICK_INTERVAL = 0.50
-            updateSpeedButtonColors()
-        end)
-
-    speedButtons["4x"] = topBar:addButton()
-        :setText(">>>")
-        :setPosition(SCREEN_WIDTH - 32, 2)
-        :setSize(4, 1)
-        :onClick(function()
-            timeAPI.setSpeed("4x")
-            TICK_INTERVAL = 0.15
-            updateSpeedButtonColors()
-        end)
-
-
-updateSpeedButtonColors()
-
--- Sidebar
-    local SIDEBAR_W = 15
-        local sidebar = mainFrame:addScrollableFrame()
-        :setBackground(colors.lightGray)
-        :setPosition(SCREEN_WIDTH, 4)   
-        :setSize(SIDEBAR_W, SCREEN_HEIGHT - 3)
-        :setZIndex(25)
-        :setDirection("vertical")
-        :hide()
-
-
-local arrowTop    = sidebar:addLabel():setText("<"):setPosition(1, 5):setForeground(colors.black)
-local arrowBottom = sidebar:addLabel():setText("<"):setPosition(1,15):setForeground(colors.black)
-
-
-sidebar:onGetFocus(function(self)
-  self:setPosition(SCREEN_WIDTH - (SIDEBAR_W - 1))  
-  arrowTop:setText(">")
-  arrowBottom:setText(">")
+-- Pause menu wiring
+uiAPI.onPauseOpen(function()
+  if timeAPI.setSpeed then timeAPI.setSpeed("pause") end
+  pcall(function() if uiAPI.updateSpeedButtons then uiAPI.updateSpeedButtons() end end)
+end)
+uiAPI.onPauseResume(function()
+  if timeAPI.setSpeed then timeAPI.setSpeed("normal") end
+  pcall(function() if uiAPI.updateSpeedButtons then uiAPI.updateSpeedButtons() end end)
+end)
+uiAPI.onPauseSave(function()
+  pcall(function() saveAPI.save() saveAPI.commit() end)
+  pcall(function() spawnToast(pauseMenu, "Game saved", 10, 12, colors.green, 1.7) end)
+end)
+uiAPI.onPauseLoad(function()
+  pcall(function() saveAPI.load() end)
+  pcall(function() refreshUI() end)
+  pcall(function() spawnToast(pauseMenu, "Game loaded", 9, 12, colors.yellow, 1.7) end)
+end)
+uiAPI.onPauseSettings(function()
+  pcall(function() spawnToast(pauseMenu, "Settings coming soon", 5, 12, colors.gray, 1.7) end)
+end)
+uiAPI.onPauseQuitToMenu(function()
+  pcall(function() saveAPI.save() end)
+  pcall(function() basalt.stop() end)
+  local ok, err = pcall(function() shell.run(fs.combine(root, "PixelCorp.lua")) end)
+  if not ok and err then print(err) end
 end)
 
-sidebar:onLoseFocus(function(self)
-  self:setPosition(SCREEN_WIDTH)                  
-  arrowTop:setText("<")
-  arrowBottom:setText("<")
-end)
-
--- Display Frame (single parent for all pages)
-local displayFrame = mainFrame:addFrame()
-    :setSize(SCREEN_WIDTH, SCREEN_HEIGHT - 2)
-    :setPosition(0, 3)
-    :setZIndex(0)
-    :hide()
-
--- Base stage backdrop for the display area (painted once)
 if stageAPI and stageAPI.refreshBackground then
     stageAPI.refreshBackground(displayFrame)
 end
 
--- Cached Page Backgrounds (each page gets its own painted frame)
 local pageBackgrounds = {}
-local activeBgKey     = nil
 
 local function normalizeKey(s)
   s = (s or ""):lower()
-  -- strip common suffixes/plurals/spaces/underscores
   s = s:gsub("%.nfp$", "") :gsub("[_%s%-]+","")
   s = s:gsub("stage","") :gsub("page","")
   s = s:gsub("background","") :gsub("backdrop","")
-  -- unify obvious variants
   if s == "lemonade" then s = "lemon" end
   return s
 end
 
--- if you have known canonical mappings, put them here
-local STAGE_IMAGE_MAP = {
-  -- stage/page name (any form) -> image key
-  lemonade = "lemon",
-  lemon    = "lemon",
-  intro    = "title",
-  default  = "lemon",     -- fallback choice
-}
-
-local function resolveImageKey(name)
-  local n = normalizeKey(name)
-  -- explicit table mapping wins
-  if STAGE_IMAGE_MAP[n] then return STAGE_IMAGE_MAP[n] end
-  -- otherwise use normalized directly
-  return n
-end
 
 local function collectBackgroundItems()
   local items = {}
-  local assetsDir = fs.combine(root, "assets")
+  local assetsDir = fs.combine(root, "/assets/")
   if fs.exists(assetsDir) and fs.isDir(assetsDir) then
     for _, p in ipairs(backgroundAPI.listImages(assetsDir)) do
       local base = fs.getName(p):gsub("%.nfp$", "")
@@ -426,35 +217,18 @@ local function collectBackgroundItems()
   return items
 end
 
-local function showBackgroundKey(key)
-  if activeBgKey and pageBackgrounds[activeBgKey] then
-    pageBackgrounds[activeBgKey]:hide()
-  end
-  local f = pageBackgrounds[key]
-  if f then
-    f:show()
-    activeBgKey = key
-  end
-end
-
-local function showBackgroundFor(name)
-  showBackgroundKey(resolveImageKey(name))
-end
-
--- call this once during load
 local function initStageBackgroundsCached()
   local items = collectBackgroundItems()
   local total = #items
   if total == 0 then
-    progressBar:setProgress(100)
-    progressLabel:setText("loading.. 100%")
+    uiAPI.setLoading("No stage backgrounds found", 100)
     allBackgroundsLoaded = true
     return
   end
 
   for i, it in ipairs(items) do
     local key, path = it.key, it.path
-    loadingLabel:setText(("Loading: %s (%d/%d)"):format(path, i, total))
+    uiAPI.setLoading(("Loading: %s (%d/%d)"):format(path, i, total), math.floor(((i-1)/total)*100))
 
     backgroundAPI.preload(path)
 
@@ -468,25 +242,16 @@ local function initStageBackgroundsCached()
     pageBackgrounds[key] = bgFrame
 
     local pct = math.floor((i / total) * 100)
-    progressBar:setProgress(pct)
-    progressLabel:setText("loading.. "..pct.."%")
+    uiAPI.setLoading(nil, pct)
     os.sleep(0)
   end
 
   allBackgroundsLoaded = true
-  loadingLabel:setText("All stage backgrounds loaded!")
-  loadingFrame:hide()
-  topBar:show()
-  displayFrame:show()
-  sidebar:show()
-
-  -- Pick initial bg based on your current stage/page:
+  uiAPI.setLoading("All stage backgrounds loaded!", 100)
   local initialName =
       (stageAPI and stageAPI.getStageName and stageAPI.getStageName())
       or currentPage
       or "default"
-
-  showBackgroundFor(initialName)
 
 end
 
@@ -497,15 +262,10 @@ local function _inventoryMap()
   return p.inventory
 end
 
--- Label <-> id via itemsAPI
 local function idByLabel(label)
   return itemsAPI.idByName(label)
 end
-local function labelById(id)
-  return itemsAPI.nameById(id) or id
-end
 
--- Requirements via items.json
 local function reqByLabel(label)
   return itemsAPI.craftReqByName(label) or 0
 end
@@ -530,7 +290,6 @@ local function optionLabelsForType(typeName, haveMap, playerLevel, currentProduc
         end
       end
     elseif typeName == "fruit" then
-      -- Fruit slot is Shaved Ice -> 2 Ice Cubes
       if iceShaver then
         local shaved = itemsAPI.getByName("Shaved Ice")
         if shaved then
@@ -546,7 +305,6 @@ local function optionLabelsForType(typeName, haveMap, playerLevel, currentProduc
         end
       end
     elseif typeName == "topping" then
-      -- Allow fruits or toppings, excluding ice-based
       for _, it in ipairs(itemsAPI.listByType("topping")) do
         if itemsAPI.isUnlockedForLevel(it.id, playerLevel) then
           local nameLower = (it.name or ""):lower()
@@ -555,7 +313,6 @@ local function optionLabelsForType(typeName, haveMap, playerLevel, currentProduc
           end
         end
       end
-      -- Also include fruits as toppers (fixed rq:1)
       for _, it in ipairs(itemsAPI.listByType("fruit")) do
         if itemsAPI.isUnlockedForLevel(it.id, playerLevel) then
           local qty = tonumber(haveMap[it.id] or 0) or 0
@@ -564,7 +321,6 @@ local function optionLabelsForType(typeName, haveMap, playerLevel, currentProduc
       end
     end
   else
-    -- Lemonade (default): standard lists; apply Juicer to fruit; remove Shaved Ice from toppings
     for _, it in ipairs(itemsAPI.listByType(typeName)) do
       if itemsAPI.isUnlockedForLevel(it.id, playerLevel) then
         local req = tonumber(it.craft_req or 0) or 0
@@ -576,7 +332,6 @@ local function optionLabelsForType(typeName, haveMap, playerLevel, currentProduc
         if typeName == "topping" then
           local nameLower = (it.name or ""):lower()
           if nameLower == "shaved ice" then
-            -- skip in Lemonade mode
             goto continue
           end
         end
@@ -592,19 +347,10 @@ end
 
 local function cleanLabel(label)
   if type(label) ~= "string" then return label end
-  -- try pipe style first
   local name = label:match("^(.-)%s*|%s*rq:") 
             or label:match("^(.-)%s+req:%s*x") 
             or label
   return (name:gsub("%s+$",""))
-end
-
-
-local function _playerInvMap()
-  local state = saveAPI.get()
-  local p = state.player or {}
-  p.inventory = p.inventory or {}
-  return p.inventory
 end
 
 local function safeGetMaterials()
@@ -619,7 +365,7 @@ local function safeGetMaterials()
             local label = ("%s"):format(it.name)
             local typ = it.type or "material"  -- fallback type
             local rarity = it.rarity or "common" -- fallback rarity
-            local color = itemsAPI.itemRarityColor(it) -- 'it' is the item table in the loop
+            local color = itemsAPI.itemRarityColor(it)
             if qty > 0 then
                 table.insert(mats, {
                     key = it.id,
@@ -635,17 +381,15 @@ local function safeGetMaterials()
     end
 
     table.sort(mats, function(a, b)
-        -- sort by type first
         if a.type ~= b.type then
             return a.type < b.type
         end
-        -- then sort by rarity rank (higher rarity first)
+        -- then sort by rarity rank
         local ra = getRarityRank(b)
         local rb = getRarityRank(a)
         if ra ~= rb then
             return ra > rb
         end
-        -- then alphabetically by label
         return (a.label or a.key) < (b.label or b.key)
     end)
 
@@ -654,8 +398,6 @@ end
 
 
 local function safeGetProducts()
-  -- If you track crafted products under their own ids (not in items.json),
-  -- treat any inv entry that is NOT an items.json id as a product.
   local have = _inventoryMap()
   local known = {}
   for _, it in ipairs(itemsAPI.getAll()) do known[it.id] = true end
@@ -676,23 +418,19 @@ local function safeGetAll()
   return all
 end
 
--- robust reader: ignore callback payloads, ask the widget what’s selected
 local function menubarSelectedName(self)
-  -- Prefer explicit index if available
   if self.getItemIndex then
     local idx = self:getItemIndex()
     if type(idx) == "number" and idx >= 1 and idx <= #TAB_ORDER then
       return TAB_ORDER[idx]
     end
   end
-  -- Some builds expose a string via getValue()
   if self.getValue then
     local v = self:getValue()
     if type(v) == "string" then return resolveTabKey(v) end
     if type(v) == "number" then return TAB_ORDER[v] end
     if type(v) == "table" and type(v.text) == "string" then return resolveTabKey(v.text) end
   end
-  -- Last resort: fall back to Materials
   return "Materials"
 end
 
@@ -700,10 +438,8 @@ tabBar:onChange(function(self, _)
   selectInventoryTab(menubarSelectedName(self))
 end)
 
--- Ensure the default selection is actually set in the menubar, too
 if tabBar.setItemIndex then tabBar:setItemIndex(1) end
 
--- tab frames
 inventoryTabs["Materials"] = inventoryOverlay:addScrollableFrame()
   :setPosition(2, 4):setSize(40, 12):setBackground(colors.white):hide()
 inventoryTabs["Products"] = inventoryOverlay:addScrollableFrame()
@@ -737,7 +473,6 @@ local function mkRowProduct(tab, y, name, qty, price)
   tab:addLabel():setPosition(35, y):setSize(5,  1):setText(tostring(price or 0)):setTextAlign("right")
 end
 
--- populate logic for each tab
 local function populateMaterials()
   local tab = inventoryTabs["Materials"]; wipe(tab); mkHeader(tab)
   local items, y = safeGetMaterials(), 2
@@ -749,7 +484,6 @@ local function populateProducts()
   local items, y = safeGetProducts(), 2
     for _, it in ipairs(items) do
     local shown = it.label or it.key
-    -- If it's a composition key, show the pretty name
     if type(shown)=="string" and shown:find("^drink:") and craftAPI.prettyNameFromKey then
         shown = craftAPI.prettyNameFromKey(shown)
     end
@@ -803,8 +537,6 @@ local function buyProbability(price)
   return p
 end
 
-
-
 -- =======================
 -- Text Toast Manager (single thread, pooled)
 -- (constant real-time toasts / floating text)
@@ -832,19 +564,12 @@ local function _startToastRunner(rootFrame)
   end)
 end
 
--- Creates a timed text label on an existing parent and auto-removes it.
--- parent: any basalt frame (e.g., topBar, displayFrame, mainFrame)
--- text:   string
--- x,y:    absolute coordinates within the parent
--- color:  cc.colors.* (defaults to white)
--- duration: seconds (real-time, independent of game speed)
 function spawnToast(parent, text, x, y, color, duration)
   if not parent or not parent.addLabel then return end
   if not TextToasts or not TextToasts.runner then
     if _startToastRunner then _startToastRunner(mainFrame) end
   end
 
-  -- Limit number of active toasts
   if TextToasts and #TextToasts.items >= (TextToasts.max_active or 24) then
     local it = table.remove(TextToasts.items, 1)
     if it and it.lbl and it.lbl.remove then pcall(function() it.lbl:remove() end) end
@@ -879,15 +604,10 @@ local function trySellOnce()
   local pBuy  = buyProbability(price)
 
   if math.random() < pBuy then
-    -- 1) consume stock
     inventoryAPI.add(pick.key, -1)
-
-    -- 2) money
     if economyAPI and economyAPI.addMoney then
       economyAPI.addMoney(price, "Product sale: "..pick.label)
     end
-
-    -- 3) XP: get the authoritative value from levelAPI (base defaults to 10 inside levelAPI)
     local xpGrant = 0
     do
       local ok, grant = pcall(function()
@@ -899,16 +619,12 @@ local function trySellOnce()
         xpGrant = grant
       end
     end
-
-    -- 4) UI toasts (show the total XP ONLY)
     pcall(function()
       local xpShown = math.floor(xpGrant + 0.5)
       spawnToast(topBar, ("+$%d"):format(price), 36, 2, colors.green, 1.7)
       spawnToast(topBar, ("+%d xp"):format(xpShown), 10, 3, colors.green, 1.7)
       spawnToast(displayFrame, ("Sold 1x %s"):format(pick.label), 9, 17, colors.yellow, 1.7)
     end)
-
-    -- 5) refresh overlay if open
     pcall(function()
       if inventoryOverlay and inventoryOverlay.isVisible and inventoryOverlay:isVisible() then
         refreshInventoryTabs()
@@ -921,27 +637,22 @@ local function trySellOnce()
   return false
 end
 
-local CUSTOMERS_PER_HOUR = 4  -- tune me
+local CUSTOMERS_PER_HOUR = 4
 
 local openLabel = topBar:addLabel()
   :setPosition(25,3)
   :setText("Closed")
   :setForeground(colors.red)
 
--- Minutes deliver fractional expected customers; accumulate and sample.
-local _custCarry = 0.5
+local _custCarry = 0.4
 
--- Only sell during open hours? Optional helper:
 local function _isOpen()
-  -- If you have timeAPI.getTime():
   local t = timeAPI.getTime()
   local h = t.hour or 0
-  return (h >= 7 and h < 19)  -- 8:00–19:59 open; change or remove if you want always open
+  return (h >= 7 and h < 19)
 end
 
--- Run on every in-game minute (timeAPI.onTick fires once per minute advanced)
     timeAPI.onTick(function(_)
-        -- Skip if closed (remove this guard if you want 24/7)
         if not _isOpen() then openLabel:setText("Closed"):setForeground(colors.red) return end
         openLabel:setText("Open"):setForeground(colors.green)
 
@@ -971,7 +682,6 @@ function mkStepper(parent, x, y, w, color)
     if f._lbl then f._lbl:setText(t) end
   end
 
-  -- layout: [text] < >
   local lblW = w - 4
   f._lbl = f:addLabel():setPosition(1, 1):setSize(lblW, 1):setText("")
   local btnL = f:addButton():setPosition(lblW - 3, 1):setSize(3, 1):setText(" <<"):setBackground(colors.white)
@@ -1020,7 +730,7 @@ local function buildColorMap(opts)
     if name == "None" or name == "" then
       map[name] = colors.gray
     else
-      local baseName = cleanLabel and cleanLabel(name) or name  -- strip “| rq:… | S:…”
+      local baseName = cleanLabel and cleanLabel(name) or name
       local id = idByLabel and idByLabel(baseName) or nil
       map[name] = (itemsAPI.itemRarityColor and itemsAPI.itemRarityColor(id or baseName)) or colors.white
     end
@@ -1033,7 +743,7 @@ local function applyStepColor(stepper, list, cmap)
   local v = stepper:getText()
   if not v or v == "" then v = list[1] end
   local col = (cmap and cmap[v]) or colors.white
-  local lbl = stepper._lbl or stepper._label or stepper -- our mkStepper stores the text label as _lbl
+  local lbl = stepper._lbl or stepper._label or stepper
   if lbl.setForeground then lbl:setForeground(col) end
 end
 
@@ -1055,7 +765,6 @@ local function _selectStepperByLabel(stepper, list, label)
   if idx then stepper:setIndex(idx) end
 end
 -- === End Crafting UI helpers ===
-
 function populateCrafting()
   local tab = inventoryTabs["Crafting"]; wipe(tab)
   tab:addLabel():setPosition(1,1):setText("Select Items to craft x5 for:")
@@ -1068,7 +777,6 @@ function populateCrafting()
     ddProduct:addItem("Italian Ice")
   end
 
-  -- select by visible name (Basalt needs selectItem(index) to show it)
   local function _selectProductByName(name)
     if not ddProduct or not ddProduct.getItemCount then return false end
     local n = ddProduct:getItemCount()
@@ -1080,7 +788,6 @@ function populateCrafting()
     return false
   end
 
-  -- restore last chosen product if present; otherwise pick first
   if not _craftSel.product or not _selectProductByName(_craftSel.product) then
     ddProduct:selectItem(1)
     local it = ddProduct:getItem(1)
@@ -1096,7 +803,6 @@ function populateCrafting()
   local toppingOpts = optionLabelsForType("topping", have, L, currentProduct)
   if #toppingOpts == 0 or toppingOpts[1] ~= "None" then table.insert(toppingOpts, 1, "None") end
 
-  -- Fallbacks if inventory empty
   if #baseOpts    == 0 then baseOpts    = { (itemsAPI.listByType("base")[1]    or {}).name or "Plastic Cup" } end
   if #fruitOpts   == 0 then fruitOpts   = { (itemsAPI.listByType("fruit")[1]   or {}).name or "Lemon" } end
   if #sweetOpts   == 0 then sweetOpts   = { (itemsAPI.listByType("sweet")[1]   or {}).name or "Sugar" } end
@@ -1127,13 +833,11 @@ function populateCrafting()
   local ddTopping = mkStepper(tab, 12, y, 32, col); y = y + 1
   ddTopping:setItems(toppingOpts)
 
-  -- restore previous ingredient selections if they still exist
   _selectStepperByLabel(ddBase,    baseOpts,    _craftSel.base)
   _selectStepperByLabel(ddFruit,   fruitOpts,   _craftSel.fruit)
   _selectStepperByLabel(ddSweet,   sweetOpts,   _craftSel.sweet)
   _selectStepperByLabel(ddTopping, toppingOpts, _craftSel.topping)
 
-  -- apply initial colors
   applyStepColor(ddBase,    baseOpts,    baseColMap)
   applyStepColor(ddFruit,   fruitOpts,   fruitColMap)
   applyStepColor(ddSweet,   sweetOpts,   sweetColMap)
@@ -1181,7 +885,6 @@ function populateCrafting()
     local currentProduct = _lastProductChoice or "Lemonade"
     local iceShaver = upgradeAPI and upgradeAPI.allowShavedIceSubstitution and upgradeAPI.allowShavedIceSubstitution()
 
-    -- base
     n = reqByLabel(base)
     if bk and n and n > 0 then needs[bk] = n end
 
@@ -1255,13 +958,11 @@ function populateCrafting()
     setEnabledCompat(craftBtn, count > 0)
   end
 
-  -- set explicit starting values so labels exist
   if ddBase.setValue    and baseOpts[1]    then ddBase:setValue(baseOpts[1]) end
   if ddFruit.setValue   and fruitOpts[1]   then ddFruit:setValue(fruitOpts[1]) end
   if ddSweet.setValue   and sweetOpts[1]   then ddSweet:setValue(sweetOpts[1]) end
   if ddTopping.setValue and toppingOpts[1] then ddTopping:setValue(toppingOpts[1]) end
 
-  -- change listeners (also store the picks)
   ddBase:onChange(function()
     applyStepColor(ddBase, baseOpts, baseColMap)
     _craftSel.base = ddBase:getText()
@@ -1298,7 +999,6 @@ function populateCrafting()
     local can, base, fruit, sweet, topping = computePossible()
     local count = type(can)=="number" and can or (can and can[1]) or 0
     if count > 0 then
-      -- persist exactly what the user used before any rebuild
       _craftSel.base    = ddBase:getText()
       _craftSel.fruit   = ddFruit:getText()
       _craftSel.sweet   = ddSweet:getText()
@@ -1331,7 +1031,6 @@ function populateCrafting()
   refreshStatus()
 end
 
--- full refresh (call whenever inventory changes)
 function refreshInventoryTabs()
   populateMaterials()
   populateProducts()
@@ -1339,103 +1038,13 @@ function refreshInventoryTabs()
   populateAll()
 end
 
--- Default: show Materials
 refreshInventoryTabs()
 for _, f in pairs(inventoryTabs) do selectInventoryTab("Materials") f:hide() end
 
-
--- Overlay show function (combined)
 function showInventoryOverlay()
   refreshInventoryTabs()
   inventoryOverlay:show()
 end
-
--- Pause Menu
-local borderMenu = mainFrame:addFrame()
-    :setSize(30, 14)
-    :setPosition((SCREEN_WIDTH - 30) / 2, 5)
-    :setBackground(colors.lightGray)
-    :hide()
-local pauseMenu = borderMenu:addFrame()
-    :setSize(28, 12)
-    :setPosition(2, 2)
-    :setBackground(colors.white)
-    :setZIndex(50)
-pauseMenu:addLabel():setText("[--------------------------]"):setPosition(1, 1):setForeground(colors.black)
-pauseMenu:addLabel():setText("Pause Menu"):setPosition(10, 1):setForeground(colors.gray)
-local pauseLabel = pauseMenu:addLabel():setForeground(colors.gray):setPosition(8, 14):hide()
-
-local function hidePauseMenu()
-    pauseMenu:hide()
-    borderMenu:hide()
-    timeAPI.setSpeed(previousSpeed)
-    TICK_INTERVAL = previousSpeed == "normal" and 1 or previousSpeed == "2x" and 0.50 or previousSpeed == "4x" and 0.15 or nil
-    updateSpeedButtonColors()
-end
-
-function showPauseMenu()
-    pauseMenu:show()
-    borderMenu:show()
-    -- sleep handled dynamically
-end
-
--- Pause Menu Buttons
-pauseMenu:addButton()
-    :setText("Resume")
-    :setPosition(2, 3)
-    :setSize(26, 1)
-    :setBackground(colors.green)
-    :setForeground(colors.black)
-    :onClick(hidePauseMenu)
-
-pauseMenu:addButton()
-    :setText("Save Game")
-    :setPosition(2, 5)
-    :setSize(26, 1)
-    :setBackground(colors.blue)
-    :setForeground(colors.black)
-    :onClick(function()
-    saveAPI.save()     
-    saveAPI.commit()
-    spawnToast(pauseMenu, ("Game saved!"), 10, 12, colors.green, 1.0)
-    --pauseLabel:setPosition(10, 12):setForeground(colors.green):setText("Game saved!"):show()
-    end)
-
-pauseMenu:addButton()
-    :setText("Settings")
-    :setPosition(2, 7)
-    :setSize(26, 1)
-    :setBackground(colors.blue)
-    :setForeground(colors.black)
-    :onClick(function()
-        spawnToast(pauseMenu, ("Settings menu not implemented yet."), 1, 12, colors.gray, 2.2)
-       -- pauseLabel:setPosition(1, 12):setForeground(colors.gray):setText("Settings menu not implemented yet."):show()
-    end)
-
-pauseMenu:addButton()
-    :setText("Load Save")
-    :setPosition(2, 9)
-    :setSize(26, 1)
-    :setBackground(colors.blue)
-    :setForeground(colors.black)
-    :onClick(function()
-        saveAPI.load()
-        refreshUI()
-        spawnToast(pauseMenu, ("Game loaded!"), 9, 12, colors.orange, 1.0)
-       -- pauseLabel:setPosition(9, 12):setForeground(colors.orange):setText("Game loaded!"):show()
-    end)
-
-pauseMenu:addButton()
-    :setText("Quit to Main Menu")
-    :setPosition(2, 11)
-    :setSize(26, 1)
-    :setBackground(colors.red)
-    :setForeground(colors.black)
-    :onClick(function()
-        basalt.stop()
-        shell.run(root.."/PixelCorp")
-    end)
-
 
     local _isPopupActive = false
 -- ===== Level Up Popup =====
@@ -1474,12 +1083,12 @@ local _prevSpeedBeforePopup = "normal"
     local function _pauseForPopup()
     _prevSpeedBeforePopup = timeAPI.getSpeed and timeAPI.getSpeed() or "normal"
     if timeAPI.setSpeed then timeAPI.setSpeed("pause") end
-    updateSpeedButtonColors()
+    pcall(function() uiAPI.updateSpeedButtons() end)
     end
 
     local function _resumeFromPopup()
     if timeAPI.setSpeed then timeAPI.setSpeed(_prevSpeedBeforePopup or "normal") end
-    updateSpeedButtonColors()
+    pcall(function() uiAPI.updateSpeedButtons() end)
     end
 
     local function collectLevelUnlocks(levelNum)
@@ -1559,8 +1168,6 @@ local function _showGroup(group)
   end
 end
 
-
-
 -- Page Management
 local pageElements = {} -- Store elements for each page
 local stageListLabel = nil -- Label for stage progress
@@ -1568,18 +1175,14 @@ local STOCK_CATS = { base = "Cups", fruit = "Fruit", sweet = "Sweetener", toppin
 local STOCK_ORDER = { "base", "fruit", "sweet", "topping" }
 local _stockCatIdx = _stockCatIdx or 1
 
-local stockFrames       = stockFrames       or {}   -- one frame per category inside the Stock page
-local stockRendered     = stockRendered     or {}   -- [cat] -> set of ids already rendered
-local stockNameRefs     = stockNameRefs     or {}   -- [cat][id] -> label
-stockLabelRefs          = stockLabelRefs    or {}   -- [cat][id] -> stock label
+local stockFrames       = stockFrames       or {}   
+local stockRendered     = stockRendered     or {}   
+local stockNameRefs     = stockNameRefs     or {}   
+stockLabelRefs          = stockLabelRefs    or {}   
 priceLabelRefs          = priceLabelRefs    or {}
--- Track last day we refreshed/rebuilt Stock at 06:00
 local _lastStockRefreshDay = nil
 
--- Rebuild the Stock page based on current level + market state
-
 local function rebuildStockPage()
-  -- Remove any existing Stock widgets from the page
   if pageElements.stock then
     for _, el in ipairs(pageElements.stock) do
       if el and el.remove then el:remove() end
@@ -1587,7 +1190,6 @@ local function rebuildStockPage()
   end
   pageElements.stock = {}
 
-  -- Which category are we showing?
   local catKey = STOCK_ORDER[_stockCatIdx] or "base"
   local catTitle = (STOCK_CATS[catKey] or catKey):upper()
 
@@ -1632,10 +1234,8 @@ local function rebuildStockPage()
   table.insert(pageElements.stock, leftBtn)
   table.insert(pageElements.stock, rightBtn)
 
-  -- Eligible, purchasable items for this category only
   local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
 
-  -- Build a list of item tables (not just ids) to allow sorting by rarity + name
   local items = {}
   for _, it in ipairs(itemsAPI.listByType(catKey)) do
     if it.purchasable and itemsAPI.isUnlockedForLevel(it.id, L) then
@@ -1653,10 +1253,8 @@ local function rebuildStockPage()
     return ra < rb
   end)
 
-  -- Market stock snapshot
   local marketStock = inventoryAPI.getAvailableStock()
 
-  -- Render rows (uses the same layout you had)
   local i = 1
   for _, it in ipairs(items) do
     local id = it.id
@@ -1673,7 +1271,6 @@ local function rebuildStockPage()
       :setZIndex(10)
       :hide()
 
-    -- color the name by rarity
     local col = itemsAPI.itemRarityColor(it) -- 'it' is the item table in the loop
     if nameLabel.setForeground then nameLabel:setForeground(col) end
 
@@ -1688,7 +1285,6 @@ local function rebuildStockPage()
       :setPosition(18, y)
       :setZIndex(10)
       :hide()
-    -- optionally tint price a lighter shade; use gray/white for contrast
     if priceLabel.setForeground then priceLabel:setForeground(colors.yellow) end
 
     local stockLabel = displayFrame:addLabel()
@@ -1697,7 +1293,6 @@ local function rebuildStockPage()
       :setZIndex(10)
       :hide()
 
-    -- keep quick references so the 6am refresh code still updates
     stockLabelRefs[id] = stockLabel
     priceLabelRefs[id] = priceLabel
 
@@ -1764,8 +1359,8 @@ end
 
 pageElements.upgrades = pageElements.upgrades or {}
 local upgradeRowRefs, upgradeRowY = {}, {}
-local LEFT_W   = 26   -- width for the left label (e.g., "Seating   Lv 3")
-local EFFECT_W = 36   -- width for the effect line  (e.g., "Buy chance: 14% -> 21%")
+local LEFT_W   = 26   
+local EFFECT_W = 36   
 local BTN_W    = 15
 local BTN_X    = 34
 
@@ -1823,12 +1418,10 @@ local function _destroyRow(key)
   upgradeRowRefs[key] = nil
 end
 
--- Build (or rebuild) a single row in place — no page-wide rebuilds.
 local function buildUpgradeRow(key, y)
   upgradeRowY[key] = y
   _destroyRow(key)
 
-  -- fresh read of state
   local def      = upgradeAPI.catalog[key]
   local oneTime  = def and def.one_time
   local lvl      = (upgradeAPI.level  and upgradeAPI.level(key))  or 0
@@ -1845,7 +1438,6 @@ local function buildUpgradeRow(key, y)
     state = (atCap and "owned") or (canBuy and "buyable" or "locked")
   end
 
-  -- LEFT LINE (bounded + padded + high zIndex)
   local leftText = (oneTime
     and ("%s   $%d  (%s)"):format(_prettyName(key), cost, ownedOT and "Unlocked" or "Locked")
     or  ("%s   Lv %d"):format(_prettyName(key), lvl))
@@ -1857,9 +1449,7 @@ local function buildUpgradeRow(key, y)
       :setText(pad(leftText, LEFT_W))     -- overwrite any leftover chars
       :setForeground(_rowColor(state))
       :hide()
-  -- no background on labels (keeps background visible; spaces erase within box)
 
-  -- EFFECT LINE (bounded + padded + high zIndex)
   local effText = _effectText(key, lvl)
   local eff = displayFrame:addLabel()
       :setPosition(2, y + 1)
@@ -1869,7 +1459,6 @@ local function buildUpgradeRow(key, y)
       :setForeground(_effectColor(state))
       :hide()
 
-  -- BUTTON (lower zIndex so labels always sit on top)
   local btnText
   if state == "locked" then
     btnText = "LOCKED"
@@ -1888,7 +1477,7 @@ local function buildUpgradeRow(key, y)
       :setText(btnText)
       :setBackground(_btnBg(enabled))
       :setForeground(_btnFg(enabled))
-      :setZIndex(20)     -- below labels
+      :setZIndex(20)
       :hide()
 
   btn:onClick(function()
@@ -1928,7 +1517,6 @@ local function buildUpgradeRow(key, y)
 end
 
 function rebuildUpgradesPage()
-  -- nuke previous page elements (and unregister handlers)
   if pageElements.upgrades then
     for _, el in ipairs(pageElements.upgrades) do
       if el and el.destroy then pcall(function() el:destroy() end)
@@ -1947,7 +1535,6 @@ function rebuildUpgradesPage()
   table.insert(pageElements.upgrades, hdr)
   y = y + 1
 
-  -- Instead of a for-loop, explicitly build each visible row:
   local Lvl = _L()
   if upgradeAPI.isVisibleAtLevel("seating",    Lvl) then buildUpgradeRow("seating",    y); y = y + 2 end
   if upgradeAPI.isVisibleAtLevel("marketing",  Lvl) then buildUpgradeRow("marketing",  y); y = y + 2 end
@@ -1970,7 +1557,6 @@ local function initPageElements()
       :hide()
   )
 
-  -- Add the Guide button (place wherever your main-page controls live)
   local guideBtn = displayFrame:addButton()
     :setText("[??]")
     :setPosition(2, 3)
@@ -2025,7 +1611,7 @@ end
 
 
 
--- Page Switching (elements only; background handled by stageAPI)
+-- Page Switching
 local function switchPage(pageName)
   if currentPage and pageElements[currentPage] then
   _hideGroup(pageElements[currentPage])
@@ -2039,25 +1625,22 @@ local function switchPage(pageName)
   if pageName == "stock" then rebuildStockPage() end
   if pageName == "upgrades" then rebuildUpgradesPage() end
 
-  -- show + enable new page’s elements
   if pageElements[pageName] then
     currentPage = pageName
     _showGroup(pageElements[pageName])
     if pageBackgrounds[pageName] then pageBackgrounds[pageName]:show() end
   end
 
-  -- refresh stage backdrop unless a popup is active
   if not _isPopupActive and stageAPI and stageAPI.refreshBackground then
     stageAPI.refreshBackground(displayFrame)
   end
 end
 
-
 -- Sidebar Population
 local function populateSidebar()
   local pages = {"Main", "Licenses", "Stock", "Stages", "Upgrades"}
   for i, page in ipairs(pages) do
-    local pname = string.lower(page)   -- capture a fresh value each loop
+    local pname = string.lower(page)  
     sidebar:addButton()
       :setText(page)
       :setPosition(2, 1 + (i-1)*4)
@@ -2094,20 +1677,15 @@ local function renderLevelHUD()
   if filled < 0 then filled = 0 end
   if filled > slots then filled = slots end
   local bar = string.rep("#", filled) .. string.rep("-", slots - filled)
-  if levelLabel then levelLabel:setText("lvl " .. tostring(lvl)):setForeground(colors.yellow) end
-  if levelBarLabel then levelBarLabel:setText("|" .. bar .. "| " .. tostring(pct) .. "%"):setForeground(colors.blue) end
+  uiAPI.setHUDLevel("lvl " .. tostring(lvl))
+  uiAPI.setHUDLevelBar("|" .. bar .. "| " .. tostring(pct) .. "%")
 end
-
-
-
-
 
 -- Refresh UI
 local _lastStageKey = nil
 local _lastLevelSeen = _lastLevelSeen or nil
 function refreshUI()
      local t = timeAPI.getTime()
-    -- Check for daily 6AM stock refresh
     do
         local day = saveAPI.get().time.day
         local hour = saveAPI.get().time.hour
@@ -2122,7 +1700,6 @@ function refreshUI()
                         plbl:setText(("$%d"):format(inventoryAPI.getMarketPrice(id)))
                     end
 
-        -- Rebuild Stock page once per day at 06:00 so newly-unlocked items appear
         if hour == 6 and _lastStockRefreshDay ~= day then
             _lastStockRefreshDay = day
             rebuildStockPage()
@@ -2134,13 +1711,11 @@ function refreshUI()
         end
     end
     renderLevelHUD()
-    -- keep save time in sync if helper exists
     if timeAPI and timeAPI.bindToSave then timeAPI.bindToSave() end
     local state = saveAPI.get()
 
     local currentStage = STAGES[state.player.progress] or STAGES.odd_jobs
 
-    -- Set stage/background only if changed
         local stageKey = progressToStage(state.player.progress)
         if stageKey ~= _lastStageKey then
             if stageAPI and stageAPI.setStage then stageAPI.setStage(stageKey) end
@@ -2148,11 +1723,10 @@ function refreshUI()
             _lastStageKey = stageKey
         end
 
-        timeLabel:setText(string.format("Time: Y%d M%d D%d %02d:%02d", t.year, t.month, t.day, t.hour, t.minute))
-            moneyLabel:setText("Money: $" .. state.player.money)
-            stageLabel:setText("Stage: " .. currentStage.name)
+        uiAPI.setHUDTime(string.format("Time: Y%d M%d D%d %02d:%02d", t.year, t.month, t.day, t.hour, t.minute))
+            uiAPI.setHUDMoney("Money: $" .. state.player.money)
+            uiAPI.setHUDStage("Stage: " .. currentStage.name)
 
-            -- Update Stages page
             if currentPage == "stages" and stageListLabel then
                 local stageText = "Progress:\n"
                 for id, stage in pairs(STAGES) do
@@ -2161,7 +1735,6 @@ function refreshUI()
                 stageListLabel:setText(stageText)
             end
 
-    -- Dynamically update Buy page for stage upgrade
     if currentPage == "stages" then
         local existing = displayFrame:getChild("upgradeButton")
         if existing then existing:remove() end
@@ -2190,12 +1763,9 @@ function refreshUI()
             table.insert(pageElements.stages, btn)
         end
     end
-
-    -- Save the current time to the state
     saveAPI.updateTime(t)
 end
 
--- Background Time Update
 local function startTimeUpdates()
     timeThread:start(function()
         while true do
@@ -2210,33 +1780,27 @@ local function startTimeUpdates()
 
 end
 
-
 -- Initialization
-
 local function initialize()
-    if not saveAPI.hasSave() then
-        saveAPI.newGame()
-    else
-        saveAPI.load()
-    end
+    if not saveAPI.hasSave() then saveAPI.newGame() else saveAPI.load() end
 
-    -- Kick the UI loop immediately so loading screen paints.
-    -- IMPORTANT: The loader thread never returns (it idles after setup),
-    -- so parallel.waitForAny will keep basalt.autoUpdate() alive.
     parallel.waitForAny(
+        function() basalt.autoUpdate() end,
         function()
-            basalt.autoUpdate()
-        end,
-        function()
-            -- Preload & paint backgrounds with progress
+            _setLoading("Loading backgrounds...", 10)
             initStageBackgroundsCached()
-            -- Once backgrounds are ready, build pages & show default
+            if stageAPI and stageAPI.refreshBackground then stageAPI.refreshBackground(displayFrame) end
+            _setLoading("Building pages...", 40)
             initPageElements()
             populateSidebar()
             switchPage("main")
-            -- start the time tick thread AFTER UI exists
+            _setLoading("Starting time...", 70)
             startTimeUpdates()
-            -- never return; idle to keep parallel.waitForAny alive
+            _setLoading("Ready", 100)
+            uiAPI.showRoot()
+            uiAPI.hideLoading()
+            uiAPI.showRoot()
+            _hideLoading()
             while true do os.sleep(0.5) end
         end
     )
