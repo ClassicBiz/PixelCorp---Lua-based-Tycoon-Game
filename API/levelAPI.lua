@@ -2,9 +2,21 @@
 -- Level progression + XP rules for crafting and selling.
 -- Persists via saveAPI. Max level 250. Stage unlock thresholds handled here.
 
-local saveAPI   = require("/API/saveAPI")
-local stageAPI  = require("/API/stageAPI")
-local upgradeAPI = require("/API/upgradeAPI")
+
+local function getRoot()
+    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+    local rootPos = string.find(fullPath, "/PixelCorp")
+    if rootPos then
+        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+    end
+    if fs.exists("/PixelCorp") then return "/PixelCorp" end
+    return fullPath
+end
+local root = getRoot()
+local saveAPI   = require(root.."/API/saveAPI")
+local stageAPI  = require(root.."/API/stageAPI")
+local upgradeAPI = require(root.."/API/upgradeAPI")
 
 local levelAPI = {}
 
