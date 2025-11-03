@@ -1,19 +1,29 @@
--- API/stageAPI.lua
--- Manages stage unlocks and background switching (works with your backgroundAPI).
--- Stages: "base","lemonade","office","factory","tower" (rename as needed).
-
-local saveAPI = require("/API/saveAPI")
-local backgroundAPI = require("/API/backgroundAPI")
 
 local stageAPI = {}
 
+local function getRoot()
+    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+    local rootPos = string.find(fullPath, "/PixelCorp")
+    if rootPos then
+        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+    end
+    if fs.exists("/PixelCorp") then return "/PixelCorp" end
+    return fullPath
+end
+local root = getRoot()
+local saveAPI = require(root.."/API/saveAPI")
+local backgroundAPI = require(root.."/API/backgroundAPI")
+
+
+
 -- Map stages to NFP assets
 local STAGE_BG = {
-  base     = "assets/screen.nfp",
-  lemonade = "assets/lemon.nfp",
-  office   = "assets/office.nfp",
-  factory  = "assets/factory.nfp",
-  tower    = "assets/tower.nfp",
+  base     = root.."assets/screen.nfp",
+  lemonade = root.."assets/lemon.nfp",
+  office   = root.."assets/office.nfp",
+  factory  = root.."assets/factory.nfp",
+  tower    = root.."assets/tower.nfp",
 }
 
 -- Ensure unlocks table
