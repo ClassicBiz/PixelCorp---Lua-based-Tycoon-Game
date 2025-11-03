@@ -19,11 +19,11 @@ local backgroundAPI = require(root.."/API/backgroundAPI")
 
 -- Map stages to NFP assets
 local STAGE_BG = {
-  base     = root.."assets/screen.nfp",
-  lemonade = root.."assets/lemon.nfp",
-  office   = root.."assets/office.nfp",
-  factory  = root.."assets/factory.nfp",
-  tower    = root.."assets/tower.nfp",
+  base     = root.."/assets/screen.nfp",
+  lemonade = root.."/assets/lemon.nfp",
+  office   = root.."/assets/office.nfp",
+  factory  = root.."/assets/factory.nfp",
+  tower    = root.."/assets/tower.nfp",
 }
 
 -- Ensure unlocks table
