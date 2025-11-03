@@ -20,5 +20,6 @@ API/upgradeAPI.lua
 assets/lemon.nfp
 assets/screen.nfp
 assets/factory.nfp
+assets/warehouse.nfp
 assets/tower.nfp
 config/items.json
