@@ -12,6 +12,7 @@ local basalt = require("/PixelCorp/API/basalt")
 -- APIs
 local timeAPI = require(root.."/API/timeAPI")
 local saveAPI = require(root.."/API/saveAPI")
+local economyAPI = require(root.."/API/economyAPI")
 local backgroundAPI = require(root.."/API/backgroundAPI")
 
 local SCREEN_WIDTH, SCREEN_HEIGHT = term.getSize()
@@ -170,6 +171,7 @@ addMenuButton("[ New Game ]", 10, colors.gray, colors.green, function()
     _archiveProfileAndClearActive(slot)
     if saveAPI and saveAPI.setProfile then saveAPI.setProfile(slot) end
     saveAPI.newGame()
+    economyAPI.addMoney(350, "fresh start")
     saveAPI.commit(slot)
     if timeAPI and timeAPI.loadFromSave then timeAPI.loadFromSave() end
     bootGame()
