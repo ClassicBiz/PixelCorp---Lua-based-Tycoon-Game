@@ -1,9 +1,21 @@
 local inventoryAPI = {}
 
-local timeAPI    = require("/API/timeAPI")
-local economyAPI = require("/API/economyAPI")
-local itemsAPI   = require("/API/itemsAPI")
-local saveAPI    = require("/API/saveAPI")
+
+local function getRoot()
+    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+    local rootPos = string.find(fullPath, "/PixelCorp")
+    if rootPos then
+        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+    end
+    if fs.exists("/PixelCorp") then return "/PixelCorp" end
+    return fullPath
+end
+local root = getRoot()
+local timeAPI    = require(root.."/API/timeAPI")
+local economyAPI = require(root.."/API/economyAPI")
+local itemsAPI   = require(root.."/API/itemsAPI")
+local saveAPI    = require(root.."/API/saveAPI")
 
 -- Business day rollover at 06:00
 local function _effectiveDay()
