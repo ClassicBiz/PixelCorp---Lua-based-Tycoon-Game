@@ -3,13 +3,26 @@
 -- Uses ComputerCraft's textutils.serialize/unserialize for JSON-ish persistence.
 
 local saveAPI = {}
+
+local function getRoot()
+    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+    local rootPos = string.find(fullPath, "/PixelCorp")
+    if rootPos then
+        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+    end
+    if fs.exists("/PixelCorp") then return "/PixelCorp" end
+    return fullPath
+end
+local root = getRoot()
+
 saveAPI._listeners = {}  -- onLoad/onSet listeners
 
 local json = textutils
 
 -- Paths
-local ACTIVE_PATH   = "/saves/active.json"         -- runtime, autosave scratch
-local PROFILE_DIR   = "/saves/profiles"            -- committed saves live here
+local ACTIVE_PATH   = root.."/saves/active.json"         -- runtime, autosave scratch
+local PROFILE_DIR   = root.."/saves/profiles"            -- committed saves live here
 local DEFAULT_SLOT  = "profile1"                   -- default profile name
 local currentProfile = DEFAULT_SLOT
 
@@ -33,7 +46,7 @@ local function deepcopy(t)
 end
 
 local function ensureDirs()
-    if not fs.exists("/saves") then fs.makeDir("/saves") end
+    if not fs.exists(root.."/saves") then fs.makeDir(root.."/saves") end
     if not fs.exists(PROFILE_DIR) then fs.makeDir(PROFILE_DIR) end
 end
 
