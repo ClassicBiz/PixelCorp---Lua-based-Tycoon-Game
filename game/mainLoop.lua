@@ -188,6 +188,25 @@ uiAPI.onPauseQuitToMenu(function()
   if not ok and err then print(err) end
 end)
 
+
+uiAPI.onTopInv(function()
+  -- open overlay (stay on whatever page you're on)
+  if showInventoryOverlay then showInventoryOverlay() end
+
+  -- default to Materials tab
+  if tabBar and tabBar.setItemIndex then tabBar:setItemIndex(1) end
+  if selectInventoryTab then selectInventoryTab("Materials") end
+end)
+
+uiAPI.onTopCraft(function()
+  -- open overlay
+  if showInventoryOverlay then showInventoryOverlay() end
+
+  -- jump straight to the Crafting tab
+  if tabBar and tabBar.setItemIndex then tabBar:setItemIndex(3) end
+  if selectInventoryTab then selectInventoryTab("Crafting") end
+end)
+
 if stageAPI and stageAPI.refreshBackground then
     stageAPI.refreshBackground(displayFrame)
 end
@@ -1570,38 +1589,13 @@ local function initPageElements()
 
   table.insert(pageElements.main, guideBtn)
 
-    -- Licenses Page
-    pageElements.licenses = {}
-    table.insert(pageElements.licenses, displayFrame:addLabel():setText("Licenses"):setPosition(2, 2):setZIndex(10):hide())
-    local function addLicenseButton(id, y)
-        local license = licenseAPI.licenses[id]
-        local btn = displayFrame:addButton()
-            :setText(license.name .. " ($" .. license.cost .. ")")
-            :setPosition(2, y)
-            :setSize(25, 3)
-            :setZIndex(10)
-            :onClick(function()
-                local success, msg = licenseAPI.purchase(id)
-                print(msg)
-                refreshUI()
-            end)
-            :hide()
-        table.insert(pageElements.licenses, btn)
-    end
-    addLicenseButton("lemonade", 5)
-    addLicenseButton("warehouse", 9)
-    addLicenseButton("factory", 13)
-    addLicenseButton("highrise", 17)
-
     -- Dynamic Stock Page
     pageElements.stock = {}
     rebuildStockPage()
 
     -- Stages Page
-    pageElements.stages = {}
-    table.insert(pageElements.stages, displayFrame:addLabel():setText("Stages"):setPosition(2, 2):setZIndex(10):hide())
-    stageListLabel = displayFrame:addLabel():setText("Progress:\n"):setPosition(2, 5):setZIndex(10):hide()
-    table.insert(pageElements.stages, stageListLabel)
+    pageElements.development = {}
+      uiAPI.buildDevelopmentPage()
 
     -- Upgrades Page
     pageElements.upgrades = {}
@@ -1613,18 +1607,27 @@ end
 
 -- Page Switching
 local function switchPage(pageName)
-  if currentPage and pageElements[currentPage] then
-  _hideGroup(pageElements[currentPage])
-  end
-  if currentPage and pageBackgrounds[currentPage] then
-  pageBackgrounds[currentPage]:hide()
-  end
-  if pageName == "Licenses" then 
+  -- ALWAYS hide Development UI first so it won't bleed onto other pages
+  pcall(function() if uiAPI and uiAPI.hideDevelopment then uiAPI.hideDevelopment() end end)
+
+  -- hide current page widgets
+  if currentPage and pageElements[currentPage] then _hideGroup(pageElements[currentPage]) end
+  if currentPage and pageBackgrounds[currentPage] then pageBackgrounds[currentPage]:hide() end
+
+  -- route to Development page (it draws directly on displayFrame)
+  if pageName == "development" then
+    currentPage = pageName
+    pcall(function() uiAPI.showDevelopment() end)
+    -- keep background refresh behavior
+    if stageAPI and stageAPI.refreshBackground then stageAPI.refreshBackground(displayFrame) end
+    return
   end
 
-  if pageName == "stock" then rebuildStockPage() end
+  -- existing rebuilds
+  if pageName == "stock"    then rebuildStockPage()    end
   if pageName == "upgrades" then rebuildUpgradesPage() end
 
+  -- show regular container pages
   if pageElements[pageName] then
     currentPage = pageName
     _showGroup(pageElements[pageName])
@@ -1638,7 +1641,7 @@ end
 
 -- Sidebar Population
 local function populateSidebar()
-  local pages = {"Main", "Licenses", "Stock", "Stages", "Upgrades"}
+  local pages = {"Main", "Development", "Stock", "Upgrades"}
   for i, page in ipairs(pages) do
     local pname = string.lower(page)  
     sidebar:addButton()
@@ -1735,34 +1738,12 @@ function refreshUI()
                 stageListLabel:setText(stageText)
             end
 
-    if currentPage == "stages" then
-        local existing = displayFrame:getChild("upgradeButton")
-        if existing then existing:remove() end
-        if currentStage.next then
-            local nextStage = STAGES[currentStage.next]
-            local lvl = (upgradeAPI.level and upgradeAPI.level(key)) or 0
-            local btn = displayFrame:addButton("upgradeButton")
-                :setText("Unlock " .. nextStage.name .. " ($" .. currentStage.cost .. ")")
-                :setPosition(4, 13)
-                :setSize(25, 3)
-                :setZIndex(10)
-                :onClick(function()
-                if lvl >= currentStage.req_lvl then
-                    if licenseAPI.has(currentStage.required_license) and economyAPI.spendMoney(currentStage.cost, "Stage Upgrade") then
-                        state.player.progress = currentStage.next
-                        stageAPI.unlock(progressToStage(currentStage.next))
-                        saveAPI.setState(state)
-                        refreshUI()
-                    elseif not licenseAPI.has(currentStage.required_license) then
-                        spawnToast(displayFrame, ("License "..currentStage.required_license.." required!"), 15, 2, colors.red, 1.7)
-                    end
-                else
-                    spawnToast(displayFrame, ("level "..currentStage.req_lvl.." required!"), 15, 2, colors.red, 1.7)
-                end
-                end)
-            table.insert(pageElements.stages, btn)
-        end
-    end
+          if currentPage == "development" then
+            uiAPI.onStageChanged(function(stageKey)
+              pcall(function() stageAPI.setStage(stageKey) end)
+              pcall(function() stageAPI.refreshBackground(displayFrame) end)
+            end)
+          end
     saveAPI.updateTime(t)
 end
 
@@ -1805,6 +1786,7 @@ local function initialize()
         end
     )
 end
+
 
 -- Main Execution
 initialize()
