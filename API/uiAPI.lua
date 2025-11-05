@@ -41,29 +41,33 @@ M.refs = {
 }
 
 
-local DEV = {
-  built = false,
-  els   = {},         -- all elems we spawn so we can destroy on hide (no container)
-  -- widgets we refresh:
-  licInfo = nil, licBtn = nil,
-  stgInfo = nil, stgBtn = nil,
-}
+local DEV = { built=false, els={}, licInfo=nil, licBtn=nil, stgInfo=nil, stgBtn=nil }
+local _licBusy, _stgBusy = false, false
 
 
 -- Decide current stage and next stage definition
-local function _stageState()
+local function _stageGraph()
   local s = saveAPI.get() or {}
   local cur = ((s.player or {}).progress) or "odd_jobs"
   -- your stage graph (use your real one if different)
-  local graph = {
+  return {
     odd_jobs       = { name="Odd Jobs",       next="lemonade_stand", req_lvl=0,    req_lic="lemonade", cost=100  },
-    lemonade_stand = { name="Lemonade Stand", next="warehouse",      req_lvl=50,   req_lic="warehouse",cost=1000 },
-    warehouse      = { name="Warehouse",      next="factory",        req_lvl=125,  req_lic="factory",  cost=5000 },
-    factory        = { name="Factory",        next="highrise",       req_lvl=200,  req_lic="highrise", cost=15000 },
+    lemonade_stand = { name="Lemonade Stand", next="warehouse",      req_lvl=50,   req_lic="warehouse", cost=1000 },
+    warehouse      = { name="Warehouse",      next="factory",        req_lvl=125,  req_lic="factory",   cost=5000 },
+    factory        = { name="Factory",        next="highrise",       req_lvl=200,  req_lic="highrise",  cost=15000 },
     highrise       = { name="High-Rise Corporation" }
   }
-  return cur, graph[cur], graph
 end
+
+
+function M.progressToArt(progress)
+  if progress == "lemonade_stand" then return "lemonade"
+  elseif progress == "warehouse"   then return "office"
+  elseif progress == "factory"     then return "factory"
+  elseif progress == "highrise"    then return "tower"
+  else return "base" end
+end
+
 
 
 -- --- Toast manager (re-usable, single runner) ---
@@ -127,23 +131,22 @@ function M.spawnToast(parent, text, x, y, color, duration)
 end
 
 
-local function _add(el) table.insert(DEV.els, el); return el end
-local function _killAll()
+local function _addDev(el) table.insert(DEV.els, el); return el end
+local function _clearDev()
   for _,el in ipairs(DEV.els) do
     if el and el.remove then pcall(function() el:remove() end) end
     if el and el.destroy then pcall(function() el:destroy() end) end
   end
-  DEV.els = {}
+  DEV.els, DEV.licInfo, DEV.licBtn, DEV.stgInfo, DEV.stgBtn = {}, nil, nil, nil, nil
+  DEV._licBound, DEV._stgBound = false, false
   DEV.built = false
-  DEV.licInfo, DEV.licBtn, DEV.stgInfo, DEV.stgBtn = nil, nil, nil, nil
 end
 
 local function _nextLicense()
-  -- adapt this to your actual licenses table order
-  local order = { "lemonade", "warehouse", "factory", "highrise" }
+  local order = { "lemonade","warehouse","factory","highrise" }
   for _,id in ipairs(order) do
     if not licenseAPI.has(id) then
-      local L = licenseAPI.licenses[id] or { name = id, cost = 0 }
+      local L = licenseAPI.licenses[id] or { name=id, cost=0 }
       return id, L
     end
   end
@@ -153,117 +156,136 @@ end
 -- Pretty helper
 local function _fmtMoney(n) return ("$%s"):format(tostring(n or 0)) end
 
--- Refresh ONLY license widgets
 function M.refreshDevLicenses()
   if not DEV.built then return end
   local id, L = _nextLicense()
-  local infoText, btnText, enabled
-
+  local txt, btn, enabled
   if not id then
-    infoText = "All licenses acquired."
-    btnText  = "Done"
-    enabled  = false
+    txt = "Next License:\n  All licenses acquired."
+    btn = "Done"
+    enabled = false
   else
-    infoText = ("Next License:\n  %s  (%s)"):format(L.name or id, _fmtMoney(L.cost))
-    enabled  = (not licenseAPI.has(id)) and economyAPI.canAfford(L.cost)
-    btnText  = ("Buy %s"):format(L.name or id)
+    txt = ("Next License:\n  %s  (%s)"):format(L.name or id, _fmtMoney(L.cost))
+    enabled = (not licenseAPI.has(id)) and economyAPI.canAfford(L.cost)
+    btn = ("Buy %s License"):format(L.name or id)
   end
 
-  if DEV.licInfo then DEV.licInfo:setText(infoText) end
-  if DEV.licBtn then
-    DEV.licBtn
-      :setText(btnText)
-      :setBackground(enabled and colors.blue or colors.lightGray)
-      :setForeground(enabled and colors.white or colors.gray)
-      :onClick(function()
-        if not id then return end
-        if licenseAPI.has(id) then return M.refreshDevLicenses() end
-        if not economyAPI.canAfford(L.cost) then
-          return M.toast("topbar", "Not enough money", 36, 2, colors.red, 1.6)
-        end
-        local ok, msg = licenseAPI.purchase(id)
-        M.toast("topbar", msg or (ok and "License purchased" or "Purchase failed"), 36, 2, ok and colors.green or colors.red, 1.4)
-        M.refreshDevLicenses()          -- independent
-        pcall(function() if refreshUI then refreshUI() end end)  -- your global refresh if present
-      end)
+  DEV.licInfo:setText(txt)
+  DEV.licBtn
+    :setText(btn)
+    :setBackground(enabled and colors.blue or colors.lightGray)
+    :setForeground(enabled and colors.white or colors.gray)
+
+  -- bind once; handler reads current state each click
+  if not DEV._licBound then
+    DEV._licBound = true
+    DEV.licBtn:onClick(function()
+      if _licBusy then return end
+      local curId, curL = _nextLicense()
+      if not curId then return end
+      if licenseAPI.has(curId) then return M.refreshDevLicenses() end
+      if not economyAPI.canAfford(curL.cost) then return M.toast("displayFrame","Not enough money",18,5,colors.red,1.2) end
+
+      _licBusy = true
+      local ok, msg = licenseAPI.purchase(curId)
+      M.toast("displayFrame", msg or (ok and "License purchased" or "Purchase failed"),
+              18,5, ok and colors.green or colors.red,1.2)
+
+      -- update both panels
+      M.refreshDevLicenses()
+      M.refreshDevStage()
+      pcall(function() if refreshUI then refreshUI() end end)
+
+      _licBusy=false
+    end)
   end
 end
-M._devKillAll = _killAll
+
 
 
 function M.refreshDevStage()
   if not DEV.built then return end
-  local curKey, curDef, graph = _stageState()
+  local s = saveAPI.get() or {}; s.player = s.player or {}
+  local graph = _stageGraph()
+  local curKey = s.player.progress or "odd_jobs"
+  local curDef = graph[curKey]
   local lvl = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
 
-  local infoText, btnText, enabled, nextKey, needLvl, needLic, cost
+  local info, btn, enabled, nextKey, needLvl, needLic, cost
   if curDef and curDef.next then
     nextKey = curDef.next
     local nextDef = graph[nextKey]
     needLvl = tonumber(curDef.req_lvl or 0) or 0
     needLic = tostring(curDef.req_lic or "")
-    cost = tonumber(curDef.cost or 0) or 0
-
-    infoText = ("Next Stage:\n  %s\n  Req: Lvl %d%s\n  Cost: %s"):format(
-      nextDef.name or nextKey,
-      needLvl,
-      (needLic ~= "" and (", License: "..needLic) or ""),
-      _fmtMoney(cost)
-    )
+    cost    = tonumber(curDef.cost or 0) or 0
 
     local hasLic = (needLic == "") or licenseAPI.has(needLic)
-    enabled = (lvl >= needLvl) and hasLic and economyAPI.canAfford(cost)
-    btnText = ("Unlock %s"):format(nextDef.name or nextKey)
+    enabled = hasLic and (lvl >= needLvl) and economyAPI.canAfford(cost)
+
+    info = ("Next Stage:\n  %s\n  Req: Lvl %d%s\n  Cost: %s")
+           :format(nextDef.name or nextKey, needLvl, (needLic~="" and (", License: "..needLic) or ""), _fmtMoney(cost))
+    btn  = ("Unlock %s"):format(nextDef.name or nextKey)
   else
-    infoText = "Max stage reached."
-    btnText  = "Done"
-    enabled  = false
+    info, btn, enabled = "Next Stage:\n  Max stage reached.", "Done", false
   end
 
-  if DEV.stgInfo then DEV.stgInfo:setText(infoText) end
-  if DEV.stgBtn then
-    DEV.stgBtn
-      :setText(btnText)
-      :setBackground(enabled and colors.blue or colors.lightGray)
-      :setForeground(enabled and colors.white or colors.gray)
-      :onClick(function()
-        if not (curDef and curDef.next) then return end
-        -- recheck reqs
-        local lvlNow = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
-        local hasLic = (needLic == "") or licenseAPI.has(needLic)
-        if lvlNow < needLvl then return M.toast("displayFrame","Higher level required",36,2,colors.red,1.4) end
-        if not hasLic then return M.toast("displayFrame","Required license missing",36,2,colors.red,1.4) end
-        if not economyAPI.canAfford(cost) then return M.toast("displayFrame","Not enough money",36,2,colors.red,1.4) end
+  DEV.stgInfo:setText(info)
+  DEV.stgBtn
+    :setText(btn)
+    :setBackground(enabled and colors.blue or colors.lightGray)
+    :setForeground(enabled and colors.white or colors.gray)
 
-        local okSpend = economyAPI.spendMoney(cost, "Stage Upgrade")
-        if not okSpend then return M.toast("displayFrame","Purchase failed",36,2,colors.red,1.4) end
+  if not DEV._stgBound then
+    DEV._stgBound = true
+    DEV.stgBtn:onClick(function()
+      if _stgBusy then return end
+      local state = saveAPI.get() or {}; state.player = state.player or {}
+      local g = _stageGraph(); local cur = state.player.progress or "odd_jobs"
+      local def = g[cur]; if not def or not def.next then return end
 
-        local s = saveAPI.get() or {}; s.player = s.player or {}; s.player.progress = nextKey; saveAPI.setState(s)
+      local needLvl = tonumber(def.req_lvl or 0) or 0
+      local needLic = tostring(def.req_lic or "")
+      local cost    = tonumber(def.cost or 0) or 0
+      local lvlNow  = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
+      local hasLic  = (needLic == "") or licenseAPI.has(needLic)
 
-        pcall(function() stageAPI.unlock(nextKey) end)
-        pcall(function() stageAPI.setStage(nextKey) end)
-        pcall(function() M.refreshStageBackground() end)
-        if M._onStageChanged then pcall(function() M._onStageChanged(nextKey) end) end
+      if lvlNow < needLvl then return M.toast("displayFrame","Higher level required",18,5,colors.red,1.2) end
+      if not hasLic then   return M.toast("displayFrame","Required license missing",18,5,colors.red,1.2) end
+      if not economyAPI.canAfford(cost) then return M.toast("displayFrame","Not enough money",18,5,colors.red,1.2) end
 
-        M.refreshDevStage()              -- independent
-        pcall(function() if refreshUI then refreshUI() end end)
-      end)
+      _stgBusy=true
+      economyAPI.spendMoney(cost)
+      -- persist & update art immediately
+      state.player.progress = def.next
+      saveAPI.setState(state)
+
+      local artKey = M.progressToArt(def.next)
+      if M._onStageChanged then pcall(function() M._onStageChanged(def.next) end) end
+
+        if stageAPI.setStage then stageAPI.setStage(artKey) end
+        stageAPI.refreshBackground(M.refs.displayFrame)
+
+      M.toast("displayFrame","Stage unlocked!",18,5,colors.green,1.2)
+      M.refreshDevStage()
+      pcall(function() if refreshUI then refreshUI() end end)
+
+      _stgBusy=false
+    end)
   end
 end
 
+
 function M.buildDevelopmentPage()
   if DEV.built then return end
-  local f = M.ensurePage("development")   -- returns displayFrame (no container)
-  -- Clear any old stray elements we might have left
-  _killAll()
+  local f = M.ensurePage("development")  -- uses displayFrame directly
+  _clearDev()
 
-  -- Licenses (info + button)
-  DEV.licInfo = _add(f:addLabel():setText("Next License:"):setPosition(2, 4))
-  DEV.licBtn  = _add(f:addButton():setText("Buy License"):setPosition(2, 7):setSize(27, 3))
+  -- stacked layout
+  DEV.licInfo = _addDev(f:addLabel():setText("Next License:"):setPosition(2, 4))
+  DEV.licBtn  = _addDev(f:addButton():setText("Buy License"):setPosition(2, 7):setSize(27, 3))
 
-  -- Stages (info + button) stacked below
-  DEV.stgInfo = _add(f:addLabel():setText("Next Stage:"):setPosition(2, 12))
-  DEV.stgBtn  = _add(f:addButton():setText("Unlock Stage"):setPosition(2, 15):setSize(27, 3))
+  DEV.stgInfo = _addDev(f:addLabel():setText("Next Stage:"):setPosition(2, 12))
+  DEV.stgBtn  = _addDev(f:addButton():setText("Unlock Stage"):setPosition(2, 15):setSize(27, 3))
 
   DEV.built = true
   M.refreshDevLicenses()
@@ -271,17 +293,27 @@ function M.buildDevelopmentPage()
 end
 
 function M.showDevelopment()
-  if M.buildDevelopmentPage then
-    M.buildDevelopmentPage()   -- builds on demand (no-op if already built)
-  end
-  if M.refreshDevLicenses then M.refreshDevLicenses() end
-  if M.refreshDevStage    then M.refreshDevStage()    end
+  if not DEV.built then M.buildDevelopmentPage() end
+  M.refreshDevLicenses()
+  M.refreshDevStage()
+  M.showPage("development")
 end
 
-
 function M.hideDevelopment()
-  -- IMPORTANT: remove its elements so they don't float on other pages
-  if M._devKillAll then M._devKillAll() end   -- expose your internal killer
+  M.hidePage("development")
+end
+
+-- Hard kill (alias) in case caller wants to be extra sure
+function M.killDevelopment()
+  _clearDev()
+end
+
+-- Force-disable any lingering dev widgets without tearing down state.
+function M.disableDevelopment()
+  for _,el in ipairs(DEV.els or {}) do
+    pcall(function() if el.disable then el:disable() end end)
+    pcall(function() if el.hide then el:hide() end end)
+  end
 end
 
 -- --- Loading overlay ---
@@ -575,10 +607,9 @@ function M.toast(where, text, x, y, color, duration)
   if where == "pause" then target = M.refs.topBar or target end
   return M.spawnToast(target, text, x, y, color, duration)
 end
+
 function M.refreshStageBackground()
-  if stageAPI and stageAPI.refreshBackground and M.refs.displayFrame then
     stageAPI.refreshBackground(M.refs.displayFrame)
-  end
 end
 
 
@@ -616,6 +647,8 @@ function M.ensurePage(name)
       :setPosition(1, 1)    -- matches your content coordinates
       :setZIndex(10)        -- above stage bg, below overlays
       :hide()
+
+      stageAPI.refreshBackground(f)
 
   _pages[name] = { frame = f, built = false }
   return f
