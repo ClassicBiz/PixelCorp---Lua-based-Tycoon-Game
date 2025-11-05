@@ -26,12 +26,13 @@ local economyAPI = require(root.."/API/economyAPI")
 local levelAPI   = require(root.."/API/levelAPI")
 local itemsAPI   = require(root.."/API/itemsAPI")
 local upgradeAPI = require(root.."/API/upgradeAPI")
-
+local inventoryAPI = require(root.."/API/inventoryAPI")
 -- --- State container ---
 M.refs = {
   mainFrame = nil,
   displayFrame = nil,
   topBar = nil,
+  sidebar = nil,
   inventoryOverlay = nil,
   tabBar = nil,
   loading = nil,       -- {frame,label,progressLabel,bar}
@@ -315,6 +316,138 @@ function M.disableDevelopment()
   end
 end
 
+
+
+-- ===== Stock Page (draws on displayFrame; no extra frames) =====
+local STOCK = { built=false, els={}, catIdx=1, epoch=0 }
+local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
+local STOCK_ORDER = { "base","fruit","sweet","topping" }
+
+local function _rarityColor(it) return (itemsAPI.itemRarityColor and itemsAPI.itemRarityColor(it)) or colors.white end
+local function _clearStock()
+  for _,el in ipairs(STOCK.els) do
+    pcall(function() if el.disable then el:disable() end end)
+    pcall(function() if el.hide then el:hide() end end)
+    pcall(function() if el.remove then el:remove() end end)
+    pcall(function() if el.destroy then el:destroy() end end)
+  end
+  STOCK.els = {}
+end
+
+function M.killStock() _clearStock(); STOCK.built=false end
+function M.hideStock()
+  for _,el in ipairs(STOCK.els) do
+    pcall(function() if el.disable then el:disable() end end)
+    pcall(function() if el.hide then el:hide() end end)
+  end
+end
+
+local function _add(el) table.insert(STOCK.els, el); return el end
+
+function M.buildStockPage()
+  STOCK.epoch = STOCK.epoch + 1
+  local __epoch = STOCK.epoch
+  _clearStock()
+
+  local f = M.refs.displayFrame
+  local W, H = f:getSize()
+  local SCREEN_HEIGHT = H + 2  -- displayFrame is H-2 tall vs screen; we keep old math compatible
+
+  local catKey   = STOCK_ORDER[STOCK.catIdx] or "base"
+  local catTitle = (STOCK_CATS[catKey] or catKey):upper()
+
+  _add(f:addLabel():setText("[ "..catTitle.." ]"):setPosition(3,3):setZIndex(10):hide())
+
+  local bottomY = (SCREEN_HEIGHT - 2) - 1
+  _add(f:addLabel():setText(("< page: %d/%d >"):format(STOCK.catIdx, #STOCK_ORDER)):setPosition(22,bottomY):setZIndex(10):hide())
+
+  _add(f:addButton():setText("<"):setPosition(22,bottomY):setSize(1,1):setZIndex(10):hide()
+      :onClick(function()
+        if __epoch ~= STOCK.epoch then return end
+        STOCK.catIdx = (STOCK.catIdx - 2) % #STOCK_ORDER + 1
+        M.buildStockPage(); M.showStock()
+      end))
+
+  _add(f:addButton():setText(">"):setPosition(34,bottomY):setSize(1,1):setZIndex(10):hide()
+      :onClick(function()
+        if __epoch ~= STOCK.epoch then return end
+        STOCK.catIdx = (STOCK.catIdx) % #STOCK_ORDER + 1
+        M.buildStockPage(); M.showStock()
+      end))
+
+  local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
+  local items = {}
+  for _, it in ipairs(itemsAPI.listByType(catKey)) do
+    if it.purchasable and itemsAPI.isUnlockedForLevel(it.id, L) then table.insert(items, it) end
+  end
+  table.sort(items, function(a,b)
+    local ra = itemsAPI.levelReqById(a.id); local rb = itemsAPI.levelReqById(b.id)
+    if ra ~= rb then return ra < rb end
+    return (a.name or a.id) < (b.name or b.id)
+  end)
+
+  local marketStock = inventoryAPI.getAvailableStock()
+
+  local row = 0
+  for _, it in ipairs(items) do
+    row = row + 1
+    local y = 4 + row
+    local id    = it.id
+    local name  = it.name or id
+    local price = inventoryAPI.getMarketPrice(id)
+    local amt   = marketStock[id] or 0
+    local qtyToBuy = 1
+
+    local nameLabel = _add(f:addLabel():setText(("| %s"):format(name)):setPosition(1,y):setZIndex(10):hide())
+    pcall(function() nameLabel:setForeground(_rarityColor(it)) end)
+
+    _add(f:addLabel():setText("(    ea)"):setPosition(16,y):setZIndex(10):hide())
+    local priceLabel = _add(f:addLabel():setText(("$%d"):format(price)):setPosition(18,y):setZIndex(10):hide())
+    pcall(function() priceLabel:setForeground(colors.yellow) end)
+
+    local stockLabel= _add(f:addLabel():setText("|In Stock: "..amt):setPosition(24,y):setZIndex(10):hide())
+
+    _add(f:addButton():setText("Buy"):setPosition(38,y):setBackground(colors.blue):setSize(5,1):setZIndex(10):hide()
+      :onClick(function()
+        if __epoch ~= STOCK.epoch then return end
+        local ok, msg = inventoryAPI.buyFromMarket(id, qtyToBuy)
+        if ok then M.toast("displayFrame", (qtyToBuy.." "..name.." bought!"), 17,5, colors.blue,1.0)
+        else M.toast("displayFrame", msg or "Purchase failed.", 18,5, colors.red,1.0) end
+        local newStock = inventoryAPI.getAvailableStock()
+        local newPrice = inventoryAPI.getMarketPrice(id)
+        if stockLabel and stockLabel.setText then stockLabel:setText("|In Stock: "..(newStock[id] or 0)) end
+        if priceLabel and priceLabel.setText then priceLabel:setText(("$%d"):format(newPrice)) end
+      end))
+
+    local qtyLabel = _add(f:addLabel():setText(tostring(qtyToBuy)):setPosition(46,y):setZIndex(10):hide())
+    _add(f:addButton():setText("<"):setPosition(44,y):setBackground(colors.white):setSize(1,1):setZIndex(10):hide()
+      :onClick(function() if __epoch ~= STOCK.epoch then return end; qtyToBuy = math.max(1, qtyToBuy - 1); qtyLabel:setText(tostring(qtyToBuy)) end))
+    _add(f:addButton():setText(">"):setPosition(48,y):setBackground(colors.white):setSize(1,1):setZIndex(10):hide()
+      :onClick(function() if __epoch ~= STOCK.epoch then return end; qtyToBuy = qtyToBuy + 1; qtyLabel:setText(tostring(qtyToBuy)) end))
+  end
+
+  STOCK.built = true
+end
+
+function M.showStock()
+  if not STOCK.built then M.buildStockPage() end
+  for _,el in ipairs(STOCK.els) do
+    pcall(function() if el.enable then el:enable() end end)
+    pcall(function() if el.show   then el:show()   end end)
+  end
+end
+
+function M.refreshStock()
+  if not STOCK.built then
+    M.buildStockPage()
+    M.showStock()
+    return
+  end
+  M.buildStockPage()
+  M.showStock()  -- ensure re-enabled after rebuild
+end
+
+
 -- --- Loading overlay ---
 local function buildLoading(mainFrame)
   local W,H = term.getSize()
@@ -374,10 +507,68 @@ function M.createBaseLayout()
       :hide()
 
   local displayFrame = mainFrame:addFrame()
-      :setSize(W + 1, H - 2)
+      :setSize(W, H - 2)
       :setPosition(0, 3)
       :setZIndex(0)
       :hide()
+
+  local SIDEBAR_W = 16
+  local sidebar = mainFrame:addScrollableFrame()
+      :setBackground(colors.lightGray)
+      :setPosition(W, 4)
+      :setSize(SIDEBAR_W, H - 3)
+      :setZIndex(25)
+      :setDirection("vertical")
+      :hide()
+
+  -- Sidebar open/close helpers + close button on the LEFT edge
+  local function _sidebarExpandedX() return W - (SIDEBAR_W - 1) end
+  local function _sidebarHiddenX()   return W end
+
+        local openBtn = sidebar:addButton()
+      :setText("<")
+      :setPosition(1, 1)
+      :setSize(1, 16)
+      :setBackground(colors.lightGray)
+      :setForeground(colors.black)
+
+  function M.openSidebar()
+    if not sidebar then return end
+    sidebar:setPosition(_sidebarExpandedX(), 4)
+        local closeBtn = sidebar:addButton()
+      :setText(">")
+      :setPosition(1, 1)
+      :setSize(1, 17)
+      :setBackground(colors.lightGray)
+      :setForeground(colors.black)
+      :onClick(function() M.closeSidebar() end)
+  end
+
+  function M.closeSidebar()
+    if not sidebar then return end
+    sidebar:setPosition(_sidebarHiddenX(), 4)
+      local openBtn = sidebar:addButton()
+      :setText("<")
+      :setPosition(1, 1)
+      :setSize(1, 17)
+      :setBackground(colors.lightGray)
+      :setForeground(colors.black)
+      :onClick(function() M.openSidebar() end)
+  end
+
+
+
+
+
+
+  sidebar:onGetFocus(function(self)
+    M.openSidebar()
+      -- Close button at the far LEFT edge of the sidebar
+  end)
+  sidebar:onLoseFocus(function(self)
+    M.closeSidebar()
+      -- Close button at the far LEFT edge of the sidebar
+  end)
 
   -- Inventory overlay shell (tabs created by caller)
   local inventoryOverlay = mainFrame:addMovableFrame()
@@ -529,6 +720,7 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
   M.refs.mainFrame = mainFrame
   M.refs.displayFrame = displayFrame
   M.refs.topBar = topBar
+  M.refs.sidebar = sidebar
   M.refs.inventoryOverlay = inventoryOverlay
   M.refs.loading = buildLoading(mainFrame)
   M.refs.speedButtons = speedButtons
@@ -545,6 +737,7 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
   -- Make them available globally for legacy code that referenced globals
   _G.mainFrame        = mainFrame
   _G.topBar           = topBar
+  _G.sidebar          = sidebar
   _G.displayFrame     = displayFrame
   _G.inventoryOverlay = inventoryOverlay
   _G.spawnToast       = M.spawnToast
@@ -556,6 +749,7 @@ end
 function M.showRoot()
   if M.refs.topBar then M.refs.topBar:show() end
   if M.refs.displayFrame then M.refs.displayFrame:show() end
+  if M.refs.sidebar then M.refs.sidebar:show() end
 end
 
 -- Convenience HUD updaters (caller may call these each tick)
@@ -602,7 +796,7 @@ function M.onTopCraft(fn) M._onTopCraft = fn end
 local _pages = _pages or {}
 
 -- Pages that should NOT create a container (paint directly on displayFrame)
-local NO_CONTAINER = { stock = true, development = true } 
+local NO_CONTAINER = { development = true, stock = true, main = true, upgrades = true } 
 
 function M.ensurePage(name)
   if not name or name == "" then return M.refs.displayFrame end
