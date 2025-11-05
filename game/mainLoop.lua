@@ -51,10 +51,28 @@ local SCREEN_WIDTH, SCREEN_HEIGHT = term.getSize()
 local UI = uiAPI.createBaseLayout()
 local mainFrame        = UI.mainFrame
 local topBar           = UI.topBar
-local sidebar          = UI.sidebar
 local displayFrame     = UI.displayFrame
 local inventoryOverlay = UI.inventoryOverlay
 local pauseMenu        = UI and UI.pauseMenu or pauseMenu
+
+-- Page selection dropdown (replaces sidebar)
+local _pageNames = {"Main","Development","Stock","Upgrades"}
+local _pageMap   = { Main="main", Development="development", Stock="stock", Upgrades="upgrades" }
+local _pageSelect_silent = false
+local pageSelect = displayFrame:addDropdown():setPosition(2,2):setSize(12,1):setZIndex(85)
+for _,label in ipairs(_pageNames) do pageSelect:addItem(label) end
+
+-- Ensure switchPage exists before onChange fires; we'll also sync after building it.
+local _deferSwitch
+pageSelect:onChange(function(self)
+  if _pageSelect_silent then return end
+  local v = self.getValue and self:getValue() or self.getItem and self:getItem(self:getItemIndex()) or "Main"
+  if type(v)=="table" and v.text then v=v.text end
+  local key = _pageMap[v] or string.lower(v or "main")
+  if key and key ~= currentPage then
+    if _deferSwitch then _deferSwitch(key) end
+  end
+end)
 
 -- Stash references for convenience
 local function Wipe(frame) if frame and frame.removeChildren then frame:removeChildren() end end
@@ -132,6 +150,7 @@ inventoryTabs["All"]       = inventoryOverlay:addScrollableFrame()
 local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
 local STOCK_ORDER = { "base","fruit","sweet","topping" }
 local _stockCatIdx = 1
+local _stockSelect_silent = false
 local pageElements = { stock = {}, upgrades = {}, main = {}, development = {} }
 local function _rarityColor(it) return itemsAPI.itemRarityColor(it) end
 
@@ -145,6 +164,7 @@ local function _clearGroup(name)
   end
 end
 
+
 local function rebuildStockPage()
   pcall(function() if uiAPI.killDevelopment then uiAPI.killDevelopment() end end)
   _clearGroup("stock")
@@ -152,29 +172,31 @@ local function rebuildStockPage()
   local catKey = STOCK_ORDER[_stockCatIdx] or "base"
   local catTitle = (STOCK_CATS[catKey] or catKey):upper()
 
-  local header = displayFrame:addLabel()
-    :setText("[ "..catTitle.." ]")
-    :setPosition(3,3):setZIndex(10):hide()
-  table.insert(pageElements.stock, header)
+  -- Category dropdown (replaces arrows). Placed just below the page dropdown.
+  local catSelect = displayFrame:addDropdown()
+    :setPosition(2,3):setSize(12,1):setZIndex(11):hide()
+  for i,ck in ipairs(STOCK_ORDER) do
+    local label = STOCK_CATS[ck] or ck
+    catSelect:addItem(label)
+  end
+  -- Select current category without triggering onChange
+  _stockSelect_silent = true
+  pcall(function() if catSelect.selectItem then catSelect:selectItem(_stockCatIdx) elseif catSelect.setItemIndex then catSelect:setItemIndex(_stockCatIdx-1) end end)
+  _stockSelect_silent = false
 
-  local bottomY = (SCREEN_HEIGHT - 2) - 1
-  local pager   = displayFrame:addLabel()
-    :setText(("< page: %d/%d >"):format(_stockCatIdx, #STOCK_ORDER))
-    :setPosition(22, bottomY):setZIndex(10):hide()
+  catSelect:onChange(function(self)
+    if _stockSelect_silent then return end
+    local idx = self.getItemIndex and self:getItemIndex() or _stockCatIdx
+    if idx == 0 then idx = 1 end
+    _stockCatIdx = math.min(math.max(1, idx), #STOCK_ORDER)
+    rebuildStockPage()
+    if currentPage == "stock" then
+      for _,e in ipairs(pageElements.stock) do if e.show then e:show() end end
+    end
+  end)
+  table.insert(pageElements.stock, catSelect)
 
-  local leftBtn = displayFrame:addButton():setText("<"):setPosition(22,bottomY):setSize(1,1):setZIndex(10):hide()
-    :onClick(function()
-      _stockCatIdx = (_stockCatIdx - 2) % #STOCK_ORDER + 1
-      rebuildStockPage(); if currentPage == "stock" then for _,e in ipairs(pageElements.stock) do e:show() end end
-    end)
-  local rightBtn = displayFrame:addButton():setText(">"):setPosition(34,bottomY):setSize(1,1):setZIndex(10):hide()
-    :onClick(function()
-      _stockCatIdx = (_stockCatIdx) % #STOCK_ORDER + 1
-      rebuildStockPage(); if currentPage == "stock" then for _,e in ipairs(pageElements.stock) do e:show() end end
-    end)
-
-  table.insert(pageElements.stock, pager); table.insert(pageElements.stock, leftBtn); table.insert(pageElements.stock, rightBtn)
-
+  -- Rows will start below the dropdown
   local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   local items = {}
   for _, it in ipairs(itemsAPI.listByType(catKey)) do
@@ -210,6 +232,12 @@ local function rebuildStockPage()
 
     local buyBtn = displayFrame:addButton():setText("Buy"):setPosition(38,y):setBackground(colors.blue):setSize(5,1):setZIndex(10):hide()
       :onClick(function()
+        local s = saveAPI.get() or {}; s.player = s.player or {}
+        local prog = tostring(s.player.progress or "odd_jobs")
+        if prog == "odd_jobs" then
+          uiAPI.toast("displayFrame", "Unlock Lemonade Stand first", 16,5, colors.red, 1.5)
+          return
+        end
         local ok, msg = inventoryAPI.buyFromMarket(id, qtyToBuy)
         if ok then uiAPI.toast("displayFrame", (qtyToBuy.." "..name.." bought!"), 17,5, colors.blue,1.0)
         else uiAPI.toast("displayFrame", msg or "Purchase failed.", 18,5, colors.red,1.0) end
@@ -692,7 +720,6 @@ local function rebuildUpgradesPage()
   pcall(function() if uiAPI.killDevelopment then uiAPI.killDevelopment() end end)
   _clearGroup("upgrades")
   local y=3
-  local hdr = displayFrame:addLabel():setText("Upgrades"):setPosition(2,y):setZIndex(10):hide()
   table.insert(pageElements.upgrades, hdr); y=y+1
   local Lvl = (levelAPI.getLevel and levelAPI.getLevel()) or 1
   if upgradeAPI.isVisibleAtLevel("seating",    Lvl) then buildUpgradeRow("seating",    y); y=y+2 end
@@ -708,7 +735,6 @@ end
 -- ==============
 local function buildMainPage()
   _clearGroup("main")
-  local title = displayFrame:addLabel():setText("---------------| Main Screen |---------------"):setPosition(2,2):setZIndex(10):hide()
   local guideBtn = displayFrame:addButton():setText("[??]"):setPosition(2,3):setSize(4,1):setBackground(colors.blue):setForeground(colors.black):hide()
     :onClick(function()
       local ok = false
@@ -717,7 +743,7 @@ local function buildMainPage()
       if (not ok) and uiAPI and uiAPI.openGuide then ok = pcall(function() uiAPI.openGuide() end) end
       if not ok then uiAPI.toast("displayFrame","Guide not available", 8,5, colors.red,1.5) end
     end)
-  table.insert(pageElements.main, title); table.insert(pageElements.main, guideBtn)
+    table.insert(pageElements.main, guideBtn)
 end
 
 local function buildDevelopmentPage()
@@ -741,6 +767,13 @@ end
 
 currentPage = "main"
 local function switchPage(name)
+  if pageSelect and pageSelect.setItemIndex then
+    local idx = 1
+    if name=="development" then idx=2 elseif name=="stock" then idx=3 elseif name=="upgrades" then idx=4 end
+    _pageSelect_silent = true
+    pcall(function() pageSelect:setItemIndex(idx) end)
+    _pageSelect_silent = false
+  end
   hideAllPages()
   currentPage = name
 
@@ -757,17 +790,6 @@ local function switchPage(name)
     pcall(function() if uiAPI.killDevelopment then uiAPI.killDevelopment() end end)
     if #pageElements.main == 0 then buildMainPage() end
     for _,el in ipairs(pageElements.main) do if el.show then el:show() end end
-  end
-end
-
-local function populateSidebar()
-  local pages = {"Main","Development","Stock","Upgrades"}
-  for i, page in ipairs(pages) do
-    local pname = string.lower(page)
-    sidebar:addButton()
-      :setText(page):setPosition(2, 1 + (i-1)*4):setSize(12,3)
-      :setBackground(colors.blue):setForeground(colors.white)
-      :onClick(function() switchPage(pname) end)
   end
 end
 
@@ -926,6 +948,7 @@ end
 -- Initialization
 -- ============
 local function initialize()
+_deferSwitch = switchPage
   if not saveAPI.hasSave() then saveAPI.newGame() else saveAPI.load() end
 
   parallel.waitForAny(
@@ -939,7 +962,7 @@ local function initialize()
       buildMainPage()
       rebuildStockPage()
       rebuildUpgradesPage()
-      populateSidebar()
+      -- sidebar removed; using dropdown
       os.sleep(1.25)
       uiAPI.setLoading("Starting time...", 70)
       startTimeUpdates()
@@ -959,4 +982,5 @@ local function initialize()
   )
 end
 
+_deferSwitch = switchPage
 initialize()
