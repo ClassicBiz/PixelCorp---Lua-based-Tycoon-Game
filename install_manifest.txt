@@ -12,6 +12,8 @@ API/licenseAPI.lua
 API/orderAPI.lua
 API/saveAPI.lua
 API/uiAPI.lua
+API/settingsAPI.lua
+API/updaterAPI.lua
 API/timeAPI.lua
 API/tutorialAPI.lua
 API/backgroundAPI.lua
