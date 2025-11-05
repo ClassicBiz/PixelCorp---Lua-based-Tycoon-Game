@@ -294,13 +294,14 @@ end
 
 function M.showDevelopment()
   if not DEV.built then M.buildDevelopmentPage() end
+  -- Re-enable and reveal any previously hidden dev widgets
+  for _, el in ipairs(DEV.els or {}) do
+    pcall(function() if el.enable then el:enable() end end)
+    pcall(function() if el.show then el:show() end end)
+  end
   M.refreshDevLicenses()
   M.refreshDevStage()
   M.showPage("development")
-end
-
-function M.hideDevelopment()
-  M.hidePage("development")
 end
 
 -- Hard kill (alias) in case caller wants to be extra sure
