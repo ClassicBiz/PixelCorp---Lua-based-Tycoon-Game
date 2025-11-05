@@ -150,7 +150,6 @@ inventoryTabs["All"]       = inventoryOverlay:addScrollableFrame()
 local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
 local STOCK_ORDER = { "base","fruit","sweet","topping" }
 local _stockCatIdx = 1
-local _stockSelect_silent = false
 local pageElements = { stock = {}, upgrades = {}, main = {}, development = {} }
 local function _rarityColor(it) return itemsAPI.itemRarityColor(it) end
 
@@ -164,7 +163,6 @@ local function _clearGroup(name)
   end
 end
 
-
 local function rebuildStockPage()
   pcall(function() if uiAPI.killDevelopment then uiAPI.killDevelopment() end end)
   _clearGroup("stock")
@@ -172,31 +170,29 @@ local function rebuildStockPage()
   local catKey = STOCK_ORDER[_stockCatIdx] or "base"
   local catTitle = (STOCK_CATS[catKey] or catKey):upper()
 
-  -- Category dropdown (replaces arrows). Placed just below the page dropdown.
-  local catSelect = displayFrame:addDropdown()
-    :setPosition(2,3):setSize(12,1):setZIndex(11):hide()
-  for i,ck in ipairs(STOCK_ORDER) do
-    local label = STOCK_CATS[ck] or ck
-    catSelect:addItem(label)
-  end
-  -- Select current category without triggering onChange
-  _stockSelect_silent = true
-  pcall(function() if catSelect.selectItem then catSelect:selectItem(_stockCatIdx) elseif catSelect.setItemIndex then catSelect:setItemIndex(_stockCatIdx-1) end end)
-  _stockSelect_silent = false
+  local header = displayFrame:addLabel()
+    :setText("[ "..catTitle.." ]")
+    :setPosition(3,3):setZIndex(10):hide()
+  table.insert(pageElements.stock, header)
 
-  catSelect:onChange(function(self)
-    if _stockSelect_silent then return end
-    local idx = self.getItemIndex and self:getItemIndex() or _stockCatIdx
-    if idx == 0 then idx = 1 end
-    _stockCatIdx = math.min(math.max(1, idx), #STOCK_ORDER)
-    rebuildStockPage()
-    if currentPage == "stock" then
-      for _,e in ipairs(pageElements.stock) do if e.show then e:show() end end
-    end
-  end)
-  table.insert(pageElements.stock, catSelect)
+  local bottomY = (SCREEN_HEIGHT - 2) - 1
+  local pager   = displayFrame:addLabel()
+    :setText(("< page: %d/%d >"):format(_stockCatIdx, #STOCK_ORDER))
+    :setPosition(22, bottomY):setZIndex(10):hide()
 
-  -- Rows will start below the dropdown
+  local leftBtn = displayFrame:addButton():setText("<"):setPosition(22,bottomY):setSize(1,1):setZIndex(10):hide()
+    :onClick(function()
+      _stockCatIdx = (_stockCatIdx - 2) % #STOCK_ORDER + 1
+      rebuildStockPage(); if currentPage == "stock" then for _,e in ipairs(pageElements.stock) do e:show() end end
+    end)
+  local rightBtn = displayFrame:addButton():setText(">"):setPosition(34,bottomY):setSize(1,1):setZIndex(10):hide()
+    :onClick(function()
+      _stockCatIdx = (_stockCatIdx) % #STOCK_ORDER + 1
+      rebuildStockPage(); if currentPage == "stock" then for _,e in ipairs(pageElements.stock) do e:show() end end
+    end)
+
+  table.insert(pageElements.stock, pager); table.insert(pageElements.stock, leftBtn); table.insert(pageElements.stock, rightBtn)
+
   local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   local items = {}
   for _, it in ipairs(itemsAPI.listByType(catKey)) do
