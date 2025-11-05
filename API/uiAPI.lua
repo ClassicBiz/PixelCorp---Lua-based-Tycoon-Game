@@ -32,7 +32,6 @@ M.refs = {
   mainFrame = nil,
   displayFrame = nil,
   topBar = nil,
-  sidebar = nil,
   inventoryOverlay = nil,
   tabBar = nil,
   loading = nil,       -- {frame,label,progressLabel,bar}
@@ -327,7 +326,7 @@ local function buildLoading(mainFrame)
 
   local label = f:addLabel()
       :setText("Loading...")
-      :setPosition(math.floor(W/2)-20, math.floor(H/2)-1)
+      :setPosition(math.floor(W/2)-10, math.floor(H/2)-1)
       :setForeground(colors.white)
 
   local pl = f:addLabel()
@@ -375,33 +374,10 @@ function M.createBaseLayout()
       :hide()
 
   local displayFrame = mainFrame:addFrame()
-      :setSize(W, H - 2)
+      :setSize(W + 1, H - 2)
       :setPosition(0, 3)
       :setZIndex(0)
       :hide()
-
-  local SIDEBAR_W = 15
-  local sidebar = mainFrame:addScrollableFrame()
-      :setBackground(colors.lightGray)
-      :setPosition(W, 4)
-      :setSize(SIDEBAR_W, H - 3)
-      :setZIndex(25)
-      :setDirection("vertical")
-      :hide()
-
-  local arrowTop    = sidebar:addLabel():setText("<"):setPosition(1, 5):setForeground(colors.black)
-  local arrowBottom = sidebar:addLabel():setText("<"):setPosition(1,15):setForeground(colors.black)
-
-  sidebar:onGetFocus(function(self)
-    self:setPosition(W - (SIDEBAR_W - 1))
-    arrowTop:setText(">")
-    arrowBottom:setText(">")
-  end)
-  sidebar:onLoseFocus(function(self)
-    self:setPosition(W)
-    arrowTop:setText("<")
-    arrowBottom:setText("<")
-  end)
 
   -- Inventory overlay shell (tabs created by caller)
   local inventoryOverlay = mainFrame:addMovableFrame()
@@ -553,7 +529,6 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
   M.refs.mainFrame = mainFrame
   M.refs.displayFrame = displayFrame
   M.refs.topBar = topBar
-  M.refs.sidebar = sidebar
   M.refs.inventoryOverlay = inventoryOverlay
   M.refs.loading = buildLoading(mainFrame)
   M.refs.speedButtons = speedButtons
@@ -570,7 +545,6 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
   -- Make them available globally for legacy code that referenced globals
   _G.mainFrame        = mainFrame
   _G.topBar           = topBar
-  _G.sidebar          = sidebar
   _G.displayFrame     = displayFrame
   _G.inventoryOverlay = inventoryOverlay
   _G.spawnToast       = M.spawnToast
@@ -582,7 +556,6 @@ end
 function M.showRoot()
   if M.refs.topBar then M.refs.topBar:show() end
   if M.refs.displayFrame then M.refs.displayFrame:show() end
-  if M.refs.sidebar then M.refs.sidebar:show() end
 end
 
 -- Convenience HUD updaters (caller may call these each tick)
