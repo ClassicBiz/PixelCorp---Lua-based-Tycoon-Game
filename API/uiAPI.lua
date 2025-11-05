@@ -318,8 +318,9 @@ end
 
 
 
+
 -- ===== Stock Page (draws on displayFrame; no extra frames) =====
-local STOCK = { built=false, els={}, catIdx=1, epoch=0 }
+local STOCK = { built=false, els={}, catIdx=1, epoch=0, qsel={}, refs={} }
 local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
 local STOCK_ORDER = { "base","fruit","sweet","topping" }
 
@@ -359,7 +360,7 @@ function M.buildStockPage()
   local ddCat = _add(f:addDropdown()
       :setPosition(3,4)           -- same spot as the old title
       :setSize(12,1)
-      :setZIndex(12)
+      :setZIndex(20)
       :setBackground(colors.lightBlue)
       :setForeground(colors.black)
       :setSelectionColor(colors.lightBlue, colors.blue)
@@ -420,7 +421,7 @@ function M.buildStockPage()
     local name  = it.name or id
     local price = inventoryAPI.getMarketPrice(id)
     local amt   = marketStock[id] or 0
-    local qtyToBuy = 1
+    local qtyToBuy = tonumber((STOCK.qsel and STOCK.qsel[id]) or 1) or 1
 
     local nameLabel = _add(f:addLabel():setText(("| %s"):format(name)):setPosition(1,y):setZIndex(10):hide())
     pcall(function() nameLabel:setForeground(_rarityColor(it)) end)
@@ -430,10 +431,17 @@ function M.buildStockPage()
     pcall(function() priceLabel:setForeground(colors.yellow) end)
 
     local stockLabel= _add(f:addLabel():setText("|In Stock: "..amt):setPosition(24,y):setZIndex(10):hide())
+    STOCK.refs[id] = STOCK.refs[id] or {}
+    STOCK.refs[id].stockLabel = stockLabel
+    STOCK.refs[id].priceLabel = priceLabel
 
-    _add(f:addButton():setText("Buy"):setPosition(38,y):setBackground(colors.blue):setSize(5,1):setZIndex(10):hide()
+    local buyBtn = _add(f:addButton():setText("Buy"):setPosition(38,y):setBackground(colors.blue):setSize(5,1):setZIndex(10):hide()
       :onClick(function()
         if __epoch ~= STOCK.epoch then return end
+        if not stageAPI.isUnlocked("lemonade") then
+          M.toast("displayFrame", "Unlock Lemonade Stand first", 14,5, colors.red, 1.2)
+          return
+        end
         local ok, msg = inventoryAPI.buyFromMarket(id, qtyToBuy)
         if ok then M.toast("displayFrame", (qtyToBuy.." "..name.." bought!"), 17,5, colors.blue,1.0)
         else M.toast("displayFrame", msg or "Purchase failed.", 18,5, colors.red,1.0) end
@@ -442,12 +450,12 @@ function M.buildStockPage()
         if stockLabel and stockLabel.setText then stockLabel:setText("|In Stock: "..(newStock[id] or 0)) end
         if priceLabel and priceLabel.setText then priceLabel:setText(("$%d"):format(newPrice)) end
       end))
-
+    if not stageAPI.isUnlocked("lemonade") then buyBtn:setBackground(colors.lightGray):setForeground(colors.white) else buyBtn:setBackground(colors.blue):setForeground(colors.black) end
     local qtyLabel = _add(f:addLabel():setText(tostring(qtyToBuy)):setPosition(46,y):setZIndex(10):hide())
-    _add(f:addButton():setText("<"):setPosition(44,y):setBackground(colors.white):setSize(1,1):setZIndex(10):hide()
-      :onClick(function() if __epoch ~= STOCK.epoch then return end; qtyToBuy = math.max(1, qtyToBuy - 1); qtyLabel:setText(tostring(qtyToBuy)) end))
-    _add(f:addButton():setText(">"):setPosition(48,y):setBackground(colors.white):setSize(1,1):setZIndex(10):hide()
-      :onClick(function() if __epoch ~= STOCK.epoch then return end; qtyToBuy = qtyToBuy + 1; qtyLabel:setText(tostring(qtyToBuy)) end))
+    _add(f:addButton():setText("<"):setPosition(44,y):setBackground(colors.white):setSize(1,1):setZIndex(15):hide()
+      :onClick(function() if __epoch ~= STOCK.epoch then return end; qtyToBuy = math.max(1, qtyToBuy - 1); STOCK.qsel[id]=qtyToBuy; qtyLabel:setText(tostring(qtyToBuy)) end))
+    _add(f:addButton():setText(">"):setPosition(48,y):setBackground(colors.white):setSize(1,1):setZIndex(15):hide()
+      :onClick(function() if __epoch ~= STOCK.epoch then return end; qtyToBuy = qtyToBuy + 1; STOCK.qsel[id]=qtyToBuy; qtyLabel:setText(tostring(qtyToBuy)) end))
   end
 
   STOCK.built = true
@@ -458,6 +466,24 @@ function M.showStock()
   for _,el in ipairs(STOCK.els) do
     pcall(function() if el.enable then el:enable() end end)
     pcall(function() if el.show   then el:show()   end end)
+  end
+end
+
+
+function M.softRefreshStockLabels()
+  if not STOCK.built then return end
+  local marketStock = inventoryAPI.getAvailableStock()
+  for id, ref in pairs(STOCK.refs or {}) do
+    local ok1, lbl1 = pcall(function() return ref.stockLabel end)
+    local ok2, lbl2 = pcall(function() return ref.priceLabel end)
+    if ok1 and lbl1 and lbl1.setText then
+      local amt = marketStock[id] or 0
+      pcall(function() lbl1:setText("|In Stock: "..tostring(amt)) end)
+    end
+    if ok2 and lbl2 and lbl2.setText then
+      local price = inventoryAPI.getMarketPrice(id)
+      pcall(function() lbl2:setText(("$%d"):format(price)) end)
+    end
   end
 end
 
@@ -794,6 +820,11 @@ end
 
 -- route to topbar by default when target is pause to avoid covering menu content
 function M.toast(where, text, x, y, color, duration)
+  -- If you pass a Basalt frame, use it directly.
+  if type(where) == "table" and where.addLabel then
+    return M.spawnToast(where, text, x, y, color, duration)
+  end
+  -- Otherwise treat it as a named area ("topbar", "displayFrame", "pause", etc.)
   local target = M.getFrame(where)
   if where == "pause" then target = M.refs.topBar or target end
   return M.spawnToast(target, text, x, y, color, duration)
