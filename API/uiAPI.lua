@@ -356,24 +356,48 @@ function M.buildStockPage()
   local catKey   = STOCK_ORDER[STOCK.catIdx] or "base"
   local catTitle = (STOCK_CATS[catKey] or catKey):upper()
 
-  _add(f:addLabel():setText("[ "..catTitle.." ]"):setPosition(3,3):setZIndex(10):hide())
+  local ddCat = _add(f:addDropdown()
+      :setPosition(3,4)           -- same spot as the old title
+      :setSize(12,1)
+      :setZIndex(10)
+      :setBackground(colors.lightBlue)
+      :setForeground(colors.black)
+      :setSelectionColor(colors.lightBlue, colors.blue)
+      :hide())
 
-  local bottomY = (SCREEN_HEIGHT - 2) - 1
-  _add(f:addLabel():setText(("< page: %d/%d >"):format(STOCK.catIdx, #STOCK_ORDER)):setPosition(22,bottomY):setZIndex(10):hide())
+  -- Populate options in the same order as STOCK_ORDER
+  for i, key in ipairs(STOCK_ORDER) do
+    ddCat:addItem(STOCK_CATS[key] or key)
+  end
 
-  _add(f:addButton():setText("<"):setPosition(22,bottomY):setSize(1,1):setZIndex(10):hide()
-      :onClick(function()
-        if __epoch ~= STOCK.epoch then return end
-        STOCK.catIdx = (STOCK.catIdx - 2) % #STOCK_ORDER + 1
-        M.buildStockPage(); M.showStock()
-      end))
+  -- Try to reflect the current category visually (works with various Basalt versions)
+  pcall(function()
+    if ddCat.setSelectedItem then ddCat:setSelectedItem(STOCK.catIdx)
+    elseif ddCat.selectItem     then ddCat:selectItem(STOCK.catIdx)
+    elseif ddCat.setValue       then ddCat:setValue(STOCK_CATS[STOCK_ORDER[STOCK.catIdx]] or catTitle)
+    end
+  end)
 
-  _add(f:addButton():setText(">"):setPosition(34,bottomY):setSize(1,1):setZIndex(10):hide()
-      :onClick(function()
-        if __epoch ~= STOCK.epoch then return end
-        STOCK.catIdx = (STOCK.catIdx) % #STOCK_ORDER + 1
-        M.buildStockPage(); M.showStock()
-      end))
+  -- When a new option is picked, update catIdx and rebuild
+  ddCat:onChange(function(self, value)
+    if __epoch ~= STOCK.epoch then return end
+    local i = 1
+    if self.getItemIndex then
+      i = self:getItemIndex()
+    elseif type(value) == "number" then
+      i = value
+    else
+      -- fallback: find by label text
+      local txt = tostring(value or "")
+      for k = 1, #STOCK_ORDER do
+        if (STOCK_CATS[STOCK_ORDER[k]] or STOCK_ORDER[k]) == txt then i = k; break end
+      end
+    end
+    if i < 1 or i > #STOCK_ORDER then i = 1 end
+    STOCK.catIdx = i
+    M.buildStockPage()
+    M.showStock()
+  end)
 
   local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   local items = {}
