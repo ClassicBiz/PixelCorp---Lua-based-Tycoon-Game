@@ -130,6 +130,7 @@ end
 -- =======================
 -- Settings Modal (Main)
 -- =======================
+local version = 0.1.94.1
 local function openSettingsModal(parent)
   local W,H = term.getSize()
   local border = parent:addFrame():setSize(49,17):setPosition(2,2)
@@ -257,7 +258,7 @@ local function openSettingsModal(parent)
   -- ---------- Game Version Tab ----------
   local gv = pages.version
   gv:addLabel():setText("Version:"):setPosition(2,2)
-    gv:addLabel():setText("Version:0.1.94"):setPosition(2,12)
+    gv:addLabel():setText("Version:"..version):setPosition(2,12)
   local ddVer = gv:addDropdown():setPosition(12,2):setSize(18,1)
   local vers, latest = updaterAPI.getVersionList()
   for _,v in ipairs(vers) do ddVer:addItem(v) end
@@ -474,5 +475,6 @@ local function loadMainMenu()
 end
 
 loadMainMenu()
+
 
 
