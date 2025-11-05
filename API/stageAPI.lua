@@ -20,7 +20,8 @@ local backgroundAPI = require(root.."/API/backgroundAPI")
 -- Map stages to NFP assets
 local STAGE_BG = {
   base     = root.."/assets/screen.nfp",
-  lemonade = root.."/assets/lemon.nfp",
+  lemonade_stand = root.."/assets/lemon.nfp",
+  lemonade = root.."/assets/lemon.nfp",  -- alias for art key
   office   = root.."/assets/office.nfp",
   factory  = root.."/assets/factory.nfp",
   tower    = root.."/assets/tower.nfp",
@@ -54,10 +55,15 @@ end
 -- Explicitly set current stage (assumes it's unlocked)
 function stageAPI.setStage(name)
   local s = _ensure()
-  if s.unlocks[name] then
-    s.stage = name
-    saveAPI.save()
+  -- Accept either "progress keys" or "art keys" that exist in STAGE_BG
+  if not STAGE_BG[name] then
+    -- map common progress key -> art key where needed
+    if name == "lemonade_stand" and STAGE_BG["lemonade"] then name = "lemonade" end
   end
+  -- auto-unlock if needed
+  s.unlocks[name] = true
+  s.stage = name
+  saveAPI.save()
 end
 
 -- Call this whenever stage changes or on page load
@@ -72,6 +78,7 @@ function stageAPI.refreshBackground(frame)
   end)
   if not ok then
     print("stageAPI: failed to set background: "..tostring(err))
+    os.sleep(5)
   end
 end
 -- Return a shallow copy of stage->path map
@@ -89,4 +96,19 @@ local ok_pre, err_pre = pcall(function()
 end)
 if not ok_pre then print("stageAPI: preload error: "..tostring(err_pre)) end
 
+
+
+
+-- Set stage from a progress key (e.g., "warehouse") by mapping to an art key if needed
+function stageAPI.setStageFromProgress(progressKey)
+  local map = {
+    odd_jobs = "base",
+    lemonade_stand = STAGE_BG["lemonade"] and "lemonade" or "lemonade_stand",
+    warehouse = "office",
+    factory = "factory",
+    highrise = "tower",
+  }
+  local key = map[progressKey] or progressKey
+  stageAPI.setStage(key)
+end
 return stageAPI
