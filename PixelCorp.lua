@@ -268,7 +268,7 @@ local function openSettingsModal(parent)
 
   gv:addButton():setText("Update to Latest"):setPosition(2,5):setSize(18,1):setBackground(colors.green):setForeground(colors.white)
     :onClick(function()
-      local ok, msg = updaterAPI.updateLatest()
+      local ok, msg = updaterAPI.updateLatestAndRestart()
     end)
 
   gv:addButton():setText("Repair Current"):setPosition(22,5):setSize(18,1):setBackground(colors.blue):setForeground(colors.white)
