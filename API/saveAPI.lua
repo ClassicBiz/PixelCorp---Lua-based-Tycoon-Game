@@ -23,7 +23,7 @@ local json = textutils
 -- Paths
 local ACTIVE_PATH   = root.."/saves/active.json"         -- runtime, autosave scratch
 local PROFILE_DIR   = root.."/saves/profiles"            -- committed saves live here
-local DEFAULT_SLOT  = "profile1"                   -- default profile name
+local DEFAULT_SLOT  = "profile1"                         -- default profile name
 local currentProfile = DEFAULT_SLOT
 
 -- Default state template
@@ -53,6 +53,11 @@ end
 local function profilePath(slot)
     slot = slot or currentProfile or DEFAULT_SLOT
     return fs.combine(PROFILE_DIR, slot .. ".json")
+end
+
+local function archivedPath(slot)
+    slot = slot or currentProfile or DEFAULT_SLOT
+    return fs.combine(PROFILE_DIR, slot .. "_old.json")
 end
 
 local function notify()
@@ -210,7 +215,6 @@ function saveAPI.onLoad(fn)
     table.insert(saveAPI._listeners, fn)
 end
 
-
 -- ---------- Money Getters/Setters ----------
 function saveAPI.getPlayerMoney()
     local s = saveAPI.get()
@@ -225,5 +229,58 @@ function saveAPI.setPlayerMoney(amount)
     saveAPI.setState(s)
 end
 
+-- ---------- NEW UTILS for Settings/Profiles ----------
+-- Rename a profile (committed file). Returns ok, msg
+function saveAPI.renameProfile(oldName, newName)
+    ensureDirs()
+    if not oldName or oldName == "" then return false, "Old name missing" end
+    if not newName or newName == "" then return false, "New name missing" end
+    local src = profilePath(oldName)
+    local dst = profilePath(newName)
+    if not fs.exists(src) then return false, "Source profile not found" end
+    if fs.exists(dst) then return false, "Target already exists" end
+    fs.move(src, dst)
+    -- also move archived if present
+    local srcA, dstA = archivedPath(oldName), archivedPath(newName)
+    if fs.exists(srcA) then
+        if fs.exists(dstA) then fs.delete(dstA) end
+        fs.move(srcA, dstA)
+    end
+    if currentProfile == oldName then currentProfile = newName end
+    return true, "Renamed"
+end
+
+-- Archive the current committed profile to *_old.json (used when starting New Game from menu)
+function saveAPI.archiveCurrentCommitted(slotName)
+    ensureDirs()
+    local slot = slotName or currentProfile or DEFAULT_SLOT
+    local committed = profilePath(slot)
+    local archived  = archivedPath(slot)
+    if fs.exists(archived) then fs.delete(archived) end
+    if fs.exists(committed) then fs.move(committed, archived) end
+    if fs.exists(ACTIVE_PATH) then fs.delete(ACTIVE_PATH) end
+end
+
+-- Recover last archived profile into the committed profile. Returns ok,msg
+function saveAPI.recoverLast(slotName)
+    ensureDirs()
+    local slot = slotName or currentProfile or DEFAULT_SLOT
+    local committed = profilePath(slot)
+    local archived  = archivedPath(slot)
+    if not fs.exists(archived) then return false, "No archived save found" end
+    if fs.exists(committed) then fs.delete(committed) end
+    fs.move(archived, committed)
+    return saveAPI.loadCommitted(slot), "Recovered"
+end
+
+-- Reset all saves (deletes profiles/ and active.json). Returns ok,msg
+function saveAPI.resetAllSaves()
+    if fs.exists(PROFILE_DIR) then fs.delete(PROFILE_DIR) end
+    if fs.exists(ACTIVE_PATH) then fs.delete(ACTIVE_PATH) end
+    fs.makeDir(PROFILE_DIR)
+    currentState = deepcopy(defaultState)
+    saveAPI.save()
+    return true, "All saves reset"
+end
 
 return saveAPI
