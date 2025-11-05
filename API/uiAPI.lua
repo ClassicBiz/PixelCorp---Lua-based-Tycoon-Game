@@ -359,7 +359,7 @@ function M.buildStockPage()
   local ddCat = _add(f:addDropdown()
       :setPosition(3,4)           -- same spot as the old title
       :setSize(12,1)
-      :setZIndex(10)
+      :setZIndex(12)
       :setBackground(colors.lightBlue)
       :setForeground(colors.black)
       :setSelectionColor(colors.lightBlue, colors.blue)
