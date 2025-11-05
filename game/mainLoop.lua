@@ -1,14 +1,10 @@
+-- uiAPI.lua
+-- Centralized UI placement & helpers for PixelCorp (Basalt)
+-- This API builds the root frames (mainFrame, topBar, sidebar, displayFrame, inventory overlay),
+-- owns speed buttons & pause menu, and exposes convenience helpers (spawnToast, setHUD, etc.).
 
--- mainLoop.lua (Rewritten Core) — PixelCorp
--- Goals:
--- 1) Keep the same UI layout and interactions.
--- 2) Push logic into APIs where possible.
--- 3) Keep stage backgrounds stable & fast (no re-paint thrash).
--- 4) Be consistent and predictable; no hidden globals beyond those set by uiAPI.
-
--- =========
--- Bootstrap
--- =========
+local M = {}
+-- --- Root resolution & deps ---
 local function getRoot()
   local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
   if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
@@ -19,73 +15,52 @@ local function getRoot()
   if fs.exists("/PixelCorp") then return "/PixelCorp" end
   return fullPath
 end
+
 local root = getRoot()
-
--- Core deps (APIs own the heavy logic)
-local basalt       = require(root.."/API/basalt")
-local uiAPI        = require(root.."/API/uiAPI")
-local timeAPI      = require(root.."/API/timeAPI")
-local saveAPI      = require(root.."/API/saveAPI")
-local stageAPI     = require(root.."/API/stageAPI")
-local backgroundAPI= require(root.."/API/backgroundAPI")
-local licenseAPI   = require(root.."/API/licenseAPI")
-local itemsAPI     = require(root.."/API/itemsAPI")
+local basalt = require(root.."/API/basalt")
+local timeAPI = require(root.."/API/timeAPI")
+local stageAPI = require(root.."/API/stageAPI")
+local saveAPI    = require(root.."/API/saveAPI")
+local licenseAPI = require(root.."/API/licenseAPI")
+local economyAPI = require(root.."/API/economyAPI")
+local levelAPI   = require(root.."/API/levelAPI")
+local itemsAPI   = require(root.."/API/itemsAPI")
+local upgradeAPI = require(root.."/API/upgradeAPI")
 local inventoryAPI = require(root.."/API/inventoryAPI")
-local economyAPI   = require(root.."/API/economyAPI")
-local levelAPI     = require(root.."/API/levelAPI")
-local upgradeAPI   = require(root.."/API/upgradeAPI")
-local craftAPI     = require(root.."/API/craftAPI")
-local tutorialAPI  = require(root.."/API/tutorialAPI")
-local guideAPI     = require(root.."/API/guideAPI")
-local guideData    = require(root.."/API/guideData")
+-- --- State container ---
+M.refs = {
+  mainFrame = nil,
+  displayFrame = nil,
+  topBar = nil,
+  sidebar = nil,
+  inventoryOverlay = nil,
+  tabBar = nil,
+  loading = nil,       -- {frame,label,progressLabel,bar}
+  speedButtons = {},
+  timeThread = nil,
+}
 
--- Seed RNG safely
-pcall(function() math.randomseed(os.epoch("utc") % 2^31); for i=1,3 do math.random() end end)
 
--- Screen
-local SCREEN_WIDTH, SCREEN_HEIGHT = term.getSize()
+local DEV = { built=false, els={}, licInfo=nil, licBtn=nil, stgInfo=nil, stgBtn=nil }
+local _licBusy, _stgBusy = false, false
 
--- ==========================
--- Build the shared UI layout
--- ==========================
-local UI = uiAPI.createBaseLayout()
-local mainFrame        = UI.mainFrame
-local topBar           = UI.topBar
-local displayFrame     = UI.displayFrame
-local inventoryOverlay = UI.inventoryOverlay
-local pauseMenu        = UI and UI.pauseMenu or pauseMenu
 
--- Page selection dropdown (replaces sidebar)
-local _pageNames = {"Main","Development","Stock","Upgrades"}
-local _pageMap   = { Main="main", Development="development", Stock="stock", Upgrades="upgrades" }
-local _pageSelect_silent = false
-local pageSelect = displayFrame:addDropdown():setPosition(2,2):setSize(12,1):setZIndex(85)
-for _,label in ipairs(_pageNames) do pageSelect:addItem(label) end
+-- Decide current stage and next stage definition
+local function _stageGraph()
+  local s = saveAPI.get() or {}
+  local cur = ((s.player or {}).progress) or "odd_jobs"
+  -- your stage graph (use your real one if different)
+  return {
+    odd_jobs       = { name="Odd Jobs",       next="lemonade_stand", req_lvl=0,    req_lic="lemonade", cost=100  },
+    lemonade_stand = { name="Lemonade Stand", next="warehouse",      req_lvl=50,   req_lic="warehouse", cost=1000 },
+    warehouse      = { name="Warehouse",      next="factory",        req_lvl=125,  req_lic="factory",   cost=5000 },
+    factory        = { name="Factory",        next="highrise",       req_lvl=200,  req_lic="highrise",  cost=15000 },
+    highrise       = { name="High-Rise Corporation" }
+  }
+end
 
--- Ensure switchPage exists before onChange fires; we'll also sync after building it.
-local _deferSwitch
-pageSelect:onChange(function(self)
-  if _pageSelect_silent then return end
-  local v = self.getValue and self:getValue() or self.getItem and self:getItem(self:getItemIndex()) or "Main"
-  if type(v)=="table" and v.text then v=v.text end
-  local key = _pageMap[v] or string.lower(v or "main")
-  if key and key ~= currentPage then
-    if _deferSwitch then _deferSwitch(key) end
-  end
-end)
 
--- Stash references for convenience
-local function Wipe(frame) if frame and frame.removeChildren then frame:removeChildren() end end
-
--- =========
--- Guide HUD
--- =========
-guideAPI.init(mainFrame); guideAPI.setData(guideData)
-
--- ==============
--- Stage helpers
--- ==============
-local function progressToArt(progress)
+function M.progressToArt(progress)
   if progress == "lemonade_stand" then return "lemonade"
   elseif progress == "warehouse"   then return "office"
   elseif progress == "factory"     then return "factory"
@@ -93,105 +68,312 @@ local function progressToArt(progress)
   else return "base" end
 end
 
-local function applyStageFromProgress()
-  local s = saveAPI.get() or {}; s.player = s.player or {}
-  local artKey = progressToArt(s.player.progress or "odd_jobs")
-  if stageAPI.setStage then stageAPI.setStage(artKey) end
-  pcall(function() if stageAPI.invalidateBackground then stageAPI.invalidateBackground() end end)
-  pcall(function() if backgroundAPI and backgroundAPI.clear then backgroundAPI.clear(displayFrame) end end)
-  stageAPI.refreshBackground(displayFrame)
-end
 
-uiAPI.onStageChanged(function(nextProgressKey)
-  local artKey = uiAPI.progressToArt and uiAPI.progressToArt(nextProgressKey) or progressToArt(nextProgressKey)
-  if stageAPI.setStage then stageAPI.setStage(artKey) end
-  pcall(function() if stageAPI.invalidateBackground then stageAPI.invalidateBackground() end end)
-  pcall(function() if backgroundAPI and backgroundAPI.clear then backgroundAPI.clear(displayFrame) end end)
-  stageAPI.refreshBackground(displayFrame)
-end)
 
--- ==================
--- Inventory Overlay
--- ==================
--- Tabs are owned here (we keep layout identical to previous UI).
-local inventoryTabs = {}
-local TAB_ORDER = { "Materials", "Products", "Crafting", "All" }
-
-local tabBar = inventoryOverlay:addMenubar()
-  :setPosition(2, 2):setSize(40,1):setScrollable(false)
-  :addItem(" Materials"):addItem(" Products"):addItem(" Crafting"):addItem(" All ")
-
-local function selectInventoryTab(name)
-  for k, f in pairs(inventoryTabs) do if f and f.hide then f:hide() end end
-  if inventoryTabs[name] then inventoryTabs[name]:show() end
-end
-
-local function menubarSelectedName(self)
-  local idx = self.getItemIndex and self:getItemIndex() or 1
-  return TAB_ORDER[idx] or "Materials"
-end
-
-tabBar:onChange(function(self) selectInventoryTab(menubarSelectedName(self)) end)
-
--- Tab shells (same positions/sizes/colors as before)
-inventoryTabs["Materials"] = inventoryOverlay:addScrollableFrame()
-  :setPosition(2,4):setSize(40,12):setBackground(colors.white):hide()
-inventoryTabs["Products"]  = inventoryOverlay:addScrollableFrame()
-  :setPosition(2,4):setSize(40,12):setBackground(colors.white):hide()
-inventoryTabs["Crafting"]  = inventoryOverlay:addFrame()
-  :setPosition(2,4):setSize(40,12):setBackground(colors.white):hide()
-inventoryTabs["All"]       = inventoryOverlay:addScrollableFrame()
-  :setPosition(2,4):setSize(40,12):setBackground(colors.white):hide()
-
--- ======
--- Stock
--- ======
--- The market logic lives in inventoryAPI; this page just renders it.
-local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
-local STOCK_ORDER = { "base","fruit","sweet","topping" }
-local _stockCatIdx = 1
-local pageElements = { stock = {}, upgrades = {}, main = {}, development = {} }
-local function _rarityColor(it) return itemsAPI.itemRarityColor(it) end
-
-local function _clearGroup(name)
-  if pageElements[name] then
-    for _, el in ipairs(pageElements[name]) do
-      if el and el.remove then pcall(function() el:remove() end) end
-      if el and el.destroy then pcall(function() el:destroy() end) end
+-- --- Toast manager (re-usable, single runner) ---
+local TextToasts = { items = {}, runner = nil, root = nil, max_active = 24 }
+local function _startToastRunner(rootFrame)
+  if TextToasts.runner then return end
+  TextToasts.root = rootFrame
+  local th = TextToasts.root:addThread()
+  TextToasts.runner = th
+  th:start(function()
+    while true do
+      local now = os.clock()
+      for i = #TextToasts.items, 1, -1 do
+        local it = TextToasts.items[i]
+        if now >= (it.t1 or 0) then
+          if it.lbl and it.lbl.remove then pcall(function() it.lbl:remove() end) end
+          table.remove(TextToasts.items, i)
+        end
+      end
+      os.sleep(0.05)
     end
-    pageElements[name] = {}
+  end)
+end
+
+local function safeText(str, maxLen)
+  local t = tostring(str or "")
+  t = t:gsub("[\0-\8\11\12\14-\31]", " ")
+  t = t:gsub("\t", " ")
+  t = t:gsub("\r?\n", " ")
+  if maxLen and #t > maxLen then t = t:sub(1, maxLen) end
+  return t
+end
+
+function M.spawnToast(parent, text, x, y, color, duration)
+  if not parent or not parent.addLabel then return end
+  if not TextToasts or not TextToasts.runner then
+    _startToastRunner(M.refs.mainFrame or parent)
+  end
+
+  if #TextToasts.items >= (TextToasts.max_active or 24) then
+    local it = table.remove(TextToasts.items, 1)
+    if it and it.lbl and it.lbl.remove then pcall(function() it.lbl:remove() end) end
+  end
+
+  local px = tonumber(x) or 1
+  local py = tonumber(y) or 1
+  local pw = (parent.getSize and select(1, parent:getSize())) or term.getSize()
+  local avail = math.max(1, pw - (px - 1))
+
+  local txt = safeText(tostring(text or ""), avail)
+
+  local lbl = parent:addLabel()
+      :setPosition(px, py)
+      :setSize(#txt, 1)
+      :setText(txt)
+      :setForeground(color or colors.white)
+      :setZIndex(200)
+
+  table.insert(TextToasts.items, { lbl = lbl, t1 = os.clock() + (tonumber(duration) or 2.0) })
+  return lbl
+end
+
+
+local function _addDev(el) table.insert(DEV.els, el); return el end
+local function _clearDev()
+  for _,el in ipairs(DEV.els) do
+    if el and el.remove then pcall(function() el:remove() end) end
+    if el and el.destroy then pcall(function() el:destroy() end) end
+  end
+  DEV.els, DEV.licInfo, DEV.licBtn, DEV.stgInfo, DEV.stgBtn = {}, nil, nil, nil, nil
+  DEV._licBound, DEV._stgBound = false, false
+  DEV.built = false
+end
+
+local function _nextLicense()
+  local order = { "lemonade","warehouse","factory","highrise" }
+  for _,id in ipairs(order) do
+    if not licenseAPI.has(id) then
+      local L = licenseAPI.licenses[id] or { name=id, cost=0 }
+      return id, L
+    end
+  end
+  return nil, nil
+end
+
+-- Pretty helper
+local function _fmtMoney(n) return ("$%s"):format(tostring(n or 0)) end
+
+function M.refreshDevLicenses()
+  if not DEV.built then return end
+  local id, L = _nextLicense()
+  local txt, btn, enabled
+  if not id then
+    txt = "Next License:\n  All licenses acquired."
+    btn = "Done"
+    enabled = false
+  else
+    txt = ("Next License:\n  %s  (%s)"):format(L.name or id, _fmtMoney(L.cost))
+    enabled = (not licenseAPI.has(id)) and economyAPI.canAfford(L.cost)
+    btn = ("Buy %s License"):format(L.name or id)
+  end
+
+  DEV.licInfo:setText(txt)
+  DEV.licBtn
+    :setText(btn)
+    :setBackground(enabled and colors.blue or colors.lightGray)
+    :setForeground(enabled and colors.white or colors.gray)
+
+  -- bind once; handler reads current state each click
+  if not DEV._licBound then
+    DEV._licBound = true
+    DEV.licBtn:onClick(function()
+      if _licBusy then return end
+      local curId, curL = _nextLicense()
+      if not curId then return end
+      if licenseAPI.has(curId) then return M.refreshDevLicenses() end
+      if not economyAPI.canAfford(curL.cost) then return M.toast("displayFrame","Not enough money",18,5,colors.red,1.2) end
+
+      _licBusy = true
+      local ok, msg = licenseAPI.purchase(curId)
+      M.toast("displayFrame", msg or (ok and "License purchased" or "Purchase failed"),
+              18,5, ok and colors.green or colors.red,1.2)
+
+      -- update both panels
+      M.refreshDevLicenses()
+      M.refreshDevStage()
+      pcall(function() if refreshUI then refreshUI() end end)
+
+      _licBusy=false
+    end)
   end
 end
 
-local function rebuildStockPage()
-  pcall(function() if uiAPI.killDevelopment then uiAPI.killDevelopment() end end)
-  _clearGroup("stock")
 
-  local catKey = STOCK_ORDER[_stockCatIdx] or "base"
+
+function M.refreshDevStage()
+  if not DEV.built then return end
+  local s = saveAPI.get() or {}; s.player = s.player or {}
+  local graph = _stageGraph()
+  local curKey = s.player.progress or "odd_jobs"
+  local curDef = graph[curKey]
+  local lvl = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
+
+  local info, btn, enabled, nextKey, needLvl, needLic, cost
+  if curDef and curDef.next then
+    nextKey = curDef.next
+    local nextDef = graph[nextKey]
+    needLvl = tonumber(curDef.req_lvl or 0) or 0
+    needLic = tostring(curDef.req_lic or "")
+    cost    = tonumber(curDef.cost or 0) or 0
+
+    local hasLic = (needLic == "") or licenseAPI.has(needLic)
+    enabled = hasLic and (lvl >= needLvl) and economyAPI.canAfford(cost)
+
+    info = ("Next Stage:\n  %s\n  Req: Lvl %d%s\n  Cost: %s")
+           :format(nextDef.name or nextKey, needLvl, (needLic~="" and (", License: "..needLic) or ""), _fmtMoney(cost))
+    btn  = ("Unlock %s"):format(nextDef.name or nextKey)
+  else
+    info, btn, enabled = "Next Stage:\n  Max stage reached.", "Done", false
+  end
+
+  DEV.stgInfo:setText(info)
+  DEV.stgBtn
+    :setText(btn)
+    :setBackground(enabled and colors.blue or colors.lightGray)
+    :setForeground(enabled and colors.white or colors.gray)
+
+  if not DEV._stgBound then
+    DEV._stgBound = true
+    DEV.stgBtn:onClick(function()
+      if _stgBusy then return end
+      local state = saveAPI.get() or {}; state.player = state.player or {}
+      local g = _stageGraph(); local cur = state.player.progress or "odd_jobs"
+      local def = g[cur]; if not def or not def.next then return end
+
+      local needLvl = tonumber(def.req_lvl or 0) or 0
+      local needLic = tostring(def.req_lic or "")
+      local cost    = tonumber(def.cost or 0) or 0
+      local lvlNow  = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
+      local hasLic  = (needLic == "") or licenseAPI.has(needLic)
+
+      if lvlNow < needLvl then return M.toast("displayFrame","Higher level required",18,5,colors.red,1.2) end
+      if not hasLic then   return M.toast("displayFrame","Required license missing",18,5,colors.red,1.2) end
+      if not economyAPI.canAfford(cost) then return M.toast("displayFrame","Not enough money",18,5,colors.red,1.2) end
+
+      _stgBusy=true
+      economyAPI.spendMoney(cost)
+      -- persist & update art immediately
+      state.player.progress = def.next
+      saveAPI.setState(state)
+
+      local artKey = M.progressToArt(def.next)
+      if M._onStageChanged then pcall(function() M._onStageChanged(def.next) end) end
+
+        if stageAPI.setStage then stageAPI.setStage(artKey) end
+        stageAPI.refreshBackground(M.refs.displayFrame)
+
+      M.toast("displayFrame","Stage unlocked!",18,5,colors.green,1.2)
+      M.refreshDevStage()
+      pcall(function() if refreshUI then refreshUI() end end)
+
+      _stgBusy=false
+    end)
+  end
+end
+
+
+function M.buildDevelopmentPage()
+  if DEV.built then return end
+  local f = M.ensurePage("development")  -- uses displayFrame directly
+  _clearDev()
+
+  -- stacked layout
+  DEV.licInfo = _addDev(f:addLabel():setText("Next License:"):setPosition(2, 4))
+  DEV.licBtn  = _addDev(f:addButton():setText("Buy License"):setPosition(2, 7):setSize(27, 3))
+
+  DEV.stgInfo = _addDev(f:addLabel():setText("Next Stage:"):setPosition(2, 12))
+  DEV.stgBtn  = _addDev(f:addButton():setText("Unlock Stage"):setPosition(2, 15):setSize(27, 3))
+
+  DEV.built = true
+  M.refreshDevLicenses()
+  M.refreshDevStage()
+end
+
+function M.showDevelopment()
+  if not DEV.built then M.buildDevelopmentPage() end
+  M.refreshDevLicenses()
+  M.refreshDevStage()
+  M.showPage("development")
+end
+
+function M.hideDevelopment()
+  M.hidePage("development")
+end
+
+-- Hard kill (alias) in case caller wants to be extra sure
+function M.killDevelopment()
+  _clearDev()
+end
+
+-- Force-disable any lingering dev widgets without tearing down state.
+function M.disableDevelopment()
+  for _,el in ipairs(DEV.els or {}) do
+    pcall(function() if el.disable then el:disable() end end)
+    pcall(function() if el.hide then el:hide() end end)
+  end
+end
+
+
+
+-- ===== Stock Page (draws on displayFrame; no extra frames) =====
+local STOCK = { built=false, els={}, catIdx=1, epoch=0 }
+local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
+local STOCK_ORDER = { "base","fruit","sweet","topping" }
+
+local function _rarityColor(it) return (itemsAPI.itemRarityColor and itemsAPI.itemRarityColor(it)) or colors.white end
+local function _clearStock()
+  for _,el in ipairs(STOCK.els) do
+    pcall(function() if el.disable then el:disable() end end)
+    pcall(function() if el.hide then el:hide() end end)
+    pcall(function() if el.remove then el:remove() end end)
+    pcall(function() if el.destroy then el:destroy() end end)
+  end
+  STOCK.els = {}
+end
+
+function M.killStock() _clearStock(); STOCK.built=false end
+function M.hideStock()
+  for _,el in ipairs(STOCK.els) do
+    pcall(function() if el.disable then el:disable() end end)
+    pcall(function() if el.hide then el:hide() end end)
+  end
+end
+
+local function _add(el) table.insert(STOCK.els, el); return el end
+
+function M.buildStockPage()
+  STOCK.epoch = STOCK.epoch + 1
+  local __epoch = STOCK.epoch
+  _clearStock()
+
+  local f = M.refs.displayFrame
+  local W, H = f:getSize()
+  local SCREEN_HEIGHT = H + 2  -- displayFrame is H-2 tall vs screen; we keep old math compatible
+
+  local catKey   = STOCK_ORDER[STOCK.catIdx] or "base"
   local catTitle = (STOCK_CATS[catKey] or catKey):upper()
 
-  local header = displayFrame:addLabel()
-    :setText("[ "..catTitle.." ]")
-    :setPosition(3,3):setZIndex(10):hide()
-  table.insert(pageElements.stock, header)
+  _add(f:addLabel():setText("[ "..catTitle.." ]"):setPosition(3,3):setZIndex(10):hide())
 
   local bottomY = (SCREEN_HEIGHT - 2) - 1
-  local pager   = displayFrame:addLabel()
-    :setText(("< page: %d/%d >"):format(_stockCatIdx, #STOCK_ORDER))
-    :setPosition(22, bottomY):setZIndex(10):hide()
+  _add(f:addLabel():setText(("< page: %d/%d >"):format(STOCK.catIdx, #STOCK_ORDER)):setPosition(22,bottomY):setZIndex(10):hide())
 
-  local leftBtn = displayFrame:addButton():setText("<"):setPosition(22,bottomY):setSize(1,1):setZIndex(10):hide()
-    :onClick(function()
-      _stockCatIdx = (_stockCatIdx - 2) % #STOCK_ORDER + 1
-      rebuildStockPage(); if currentPage == "stock" then for _,e in ipairs(pageElements.stock) do e:show() end end
-    end)
-  local rightBtn = displayFrame:addButton():setText(">"):setPosition(34,bottomY):setSize(1,1):setZIndex(10):hide()
-    :onClick(function()
-      _stockCatIdx = (_stockCatIdx) % #STOCK_ORDER + 1
-      rebuildStockPage(); if currentPage == "stock" then for _,e in ipairs(pageElements.stock) do e:show() end end
-    end)
+  _add(f:addButton():setText("<"):setPosition(22,bottomY):setSize(1,1):setZIndex(10):hide()
+      :onClick(function()
+        if __epoch ~= STOCK.epoch then return end
+        STOCK.catIdx = (STOCK.catIdx - 2) % #STOCK_ORDER + 1
+        M.buildStockPage(); M.showStock()
+      end))
 
-  table.insert(pageElements.stock, pager); table.insert(pageElements.stock, leftBtn); table.insert(pageElements.stock, rightBtn)
+  _add(f:addButton():setText(">"):setPosition(34,bottomY):setSize(1,1):setZIndex(10):hide()
+      :onClick(function()
+        if __epoch ~= STOCK.epoch then return end
+        STOCK.catIdx = (STOCK.catIdx) % #STOCK_ORDER + 1
+        M.buildStockPage(); M.showStock()
+      end))
 
   local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   local items = {}
@@ -209,774 +391,454 @@ local function rebuildStockPage()
   local row = 0
   for _, it in ipairs(items) do
     row = row + 1
-    local y = 3 + 1 + row
-    local id = it.id
+    local y = 4 + row
+    local id    = it.id
     local name  = it.name or id
     local price = inventoryAPI.getMarketPrice(id)
     local amt   = marketStock[id] or 0
     local qtyToBuy = 1
 
-    local nameLabel = displayFrame:addLabel()
-      :setText(("| %s"):format(name)):setPosition(1,y):setZIndex(10):hide()
-    if nameLabel.setForeground then nameLabel:setForeground(_rarityColor(it)) end
+    local nameLabel = _add(f:addLabel():setText(("| %s"):format(name)):setPosition(1,y):setZIndex(10):hide())
+    pcall(function() nameLabel:setForeground(_rarityColor(it)) end)
 
-    local eachLabel = displayFrame:addLabel():setText("(    ea)"):setPosition(16,y):setZIndex(10):hide()
-    local priceLabel= displayFrame:addLabel():setText(("$%d"):format(price)):setPosition(18,y):setZIndex(10):hide()
-    if priceLabel.setForeground then priceLabel:setForeground(colors.yellow) end
+    _add(f:addLabel():setText("(    ea)"):setPosition(16,y):setZIndex(10):hide())
+    local priceLabel = _add(f:addLabel():setText(("$%d"):format(price)):setPosition(18,y):setZIndex(10):hide())
+    pcall(function() priceLabel:setForeground(colors.yellow) end)
 
-    local stockLabel= displayFrame:addLabel():setText("|In Stock: "..amt):setPosition(24,y):setZIndex(10):hide()
+    local stockLabel= _add(f:addLabel():setText("|In Stock: "..amt):setPosition(24,y):setZIndex(10):hide())
 
-    local buyBtn = displayFrame:addButton():setText("Buy"):setPosition(38,y):setBackground(colors.blue):setSize(5,1):setZIndex(10):hide()
+    _add(f:addButton():setText("Buy"):setPosition(38,y):setBackground(colors.blue):setSize(5,1):setZIndex(10):hide()
       :onClick(function()
-        local s = saveAPI.get() or {}; s.player = s.player or {}
-        local prog = tostring(s.player.progress or "odd_jobs")
-        if prog == "odd_jobs" then
-          uiAPI.toast("displayFrame", "Unlock Lemonade Stand first", 16,5, colors.red, 1.5)
-          return
-        end
+        if __epoch ~= STOCK.epoch then return end
         local ok, msg = inventoryAPI.buyFromMarket(id, qtyToBuy)
-        if ok then uiAPI.toast("displayFrame", (qtyToBuy.." "..name.." bought!"), 17,5, colors.blue,1.0)
-        else uiAPI.toast("displayFrame", msg or "Purchase failed.", 18,5, colors.red,1.0) end
+        if ok then M.toast("displayFrame", (qtyToBuy.." "..name.." bought!"), 17,5, colors.blue,1.0)
+        else M.toast("displayFrame", msg or "Purchase failed.", 18,5, colors.red,1.0) end
         local newStock = inventoryAPI.getAvailableStock()
         local newPrice = inventoryAPI.getMarketPrice(id)
         if stockLabel and stockLabel.setText then stockLabel:setText("|In Stock: "..(newStock[id] or 0)) end
         if priceLabel and priceLabel.setText then priceLabel:setText(("$%d"):format(newPrice)) end
-      end)
+      end))
 
-    local qtyLabel = displayFrame:addLabel():setText(tostring(qtyToBuy)):setPosition(46,y):setZIndex(10):hide()
-    local decBtn = displayFrame:addButton():setText("<"):setPosition(44,y):setBackground(colors.white):setSize(1,1):setZIndex(10):hide()
-      :onClick(function() qtyToBuy = math.max(1, qtyToBuy - 1); qtyLabel:setText(tostring(qtyToBuy)) end)
-    local incBtn = displayFrame:addButton():setText(">"):setPosition(48,y):setBackground(colors.white):setSize(1,1):setZIndex(10):hide()
-      :onClick(function() qtyToBuy = qtyToBuy + 1; qtyLabel:setText(tostring(qtyToBuy)) end)
+    local qtyLabel = _add(f:addLabel():setText(tostring(qtyToBuy)):setPosition(46,y):setZIndex(10):hide())
+    _add(f:addButton():setText("<"):setPosition(44,y):setBackground(colors.white):setSize(1,1):setZIndex(10):hide()
+      :onClick(function() if __epoch ~= STOCK.epoch then return end; qtyToBuy = math.max(1, qtyToBuy - 1); qtyLabel:setText(tostring(qtyToBuy)) end))
+    _add(f:addButton():setText(">"):setPosition(48,y):setBackground(colors.white):setSize(1,1):setZIndex(10):hide()
+      :onClick(function() if __epoch ~= STOCK.epoch then return end; qtyToBuy = qtyToBuy + 1; qtyLabel:setText(tostring(qtyToBuy)) end))
+  end
 
-    for _, el in ipairs({nameLabel, eachLabel, priceLabel, stockLabel, buyBtn, decBtn, qtyLabel, incBtn}) do
-      table.insert(pageElements.stock, el)
-    end
+  STOCK.built = true
+end
+
+function M.showStock()
+  if not STOCK.built then M.buildStockPage() end
+  for _,el in ipairs(STOCK.els) do
+    pcall(function() if el.enable then el:enable() end end)
+    pcall(function() if el.show   then el:show()   end end)
   end
 end
 
--- =====================
--- Materials/Products UI
--- =====================
-local function _mkHeader(tab) 
-  tab:addLabel():setPosition(3,1):setText("Item"):setForeground(colors.yellow)
-  tab:addLabel():setPosition(25,1):setText("+$"):setForeground(colors.yellow)
-  tab:addLabel():setPosition(37,1):setText("Qty"):setForeground(colors.yellow)
-end
-local function _mkRow(tab, y, name, qty, value, color)
-  tab:addLabel():setPosition(3,y):setSize(27,1):setText(name or ""):setForeground(color)
-  tab:addLabel():setPosition(24,y):setSize(10,1):setText(("(+$%d ea)"):format(tonumber(value) or 0))
-  tab:addLabel():setPosition(34,y):setSize(6,1):setText(tostring(qty or 0)):setTextAlign("right")
-end
-local function _mkHeaderProducts(tab)
-  tab:addLabel():setPosition(3,1):setText("Item"):setForeground(colors.yellow)
-  tab:addLabel():setPosition(31,1):setText("Qty"):setForeground(colors.yellow)
-  tab:addLabel():setPosition(37,1):setText("$"):setForeground(colors.yellow)
-end
-local function _mkRowProduct(tab, y, name, qty, price)
-  tab:addLabel():setPosition(3,y):setText(name or "")
-  tab:addLabel():setPosition(30,y):setText("|")
-  tab:addLabel():setPosition(30,y):setSize(4,1):setText(tostring(qty or 0)):setTextAlign("right")
-  tab:addLabel():setPosition(35,y):setSize(5,1):setText(tostring(price or 0)):setTextAlign("right")
+function M.refreshStock()
+  if not STOCK.built then
+    M.buildStockPage()
+    M.showStock()
+    return
+  end
+  M.buildStockPage()
+  M.showStock()  -- ensure re-enabled after rebuild
 end
 
-local function _safeText(str, maxLen)
-  local t = tostring(str or "")
-  t = t:gsub("[\0-\8\11\12\14-\31]", " ")
-  t = t:gsub("\t", " ")
-  t = t:gsub("\r?\n", " ")
-  if maxLen and #t > maxLen then t = t:sub(1, maxLen) end
-  return t
+
+-- --- Loading overlay ---
+local function buildLoading(mainFrame)
+  local W,H = term.getSize()
+  local f = mainFrame:addFrame():show()
+      :setSize(W, H)
+      :setPosition(1, 1)
+      :setBackground(colors.lightGray)
+      :setZIndex(100)
+
+  local label = f:addLabel()
+      :setText("Loading...")
+      :setPosition(math.floor(W/2)-10, math.floor(H/2)-1)
+      :setForeground(colors.white)
+
+  local pl = f:addLabel()
+      :setText("0%")
+      :setPosition(math.floor(W/2)-1, math.floor(H/2)+0)
+      :setForeground(colors.white)
+      :setZIndex(101)
+
+  local bar = f:addProgressbar()
+      :setDirection(0)
+      :setPosition(math.floor(W/2)-12, math.floor(H/2))
+      :setSize(25, 1)
+      :setProgressBar(colors.blue, " ")
+      :setBackground(colors.gray)
+      :setProgress(0)
+
+  return { frame = f, label = label, progressLabel = pl, bar = bar }
 end
 
-local function _inventoryMap()
-  local s = saveAPI.get(); s.player = s.player or {}; s.player.inventory = s.player.inventory or {}
-  return s.player.inventory
+function M.setLoading(text, pct)
+  if not M.refs.loading then return end
+  if text then M.refs.loading.label:setText(text) end
+  if pct then
+    pct = math.max(0, math.min(100, math.floor(pct)))
+    M.refs.loading.bar:setProgress(pct)
+    M.refs.loading.progressLabel:setText(tostring(pct).."%")
+  end
 end
 
-local rarityRank = { common=1, uncommon=2, rare=3, unique=4, legendary=5, mythical=6, relic=7, masterwork=8, divine=9 }
-local function _rarityRank(it) local r=(it.rarity or "common"); if type(r)=="table" then r=r.name or "common" end; return rarityRank[tostring(r):lower()] or 1 end
+function M.hideLoading()
+  if M.refs.loading and M.refs.loading.frame then
+    M.refs.loading.frame:hide()
+  end
+end
 
-local function safeGetMaterials()
-  local have = _inventoryMap()
-  local mats = {}
-  local L = levelAPI.getLevel()
-  for _, it in ipairs(itemsAPI.getAll()) do
-    if itemsAPI.isUnlockedForLevel(it.id, L) then
-      local qty = tonumber(have[it.id] or 0) or 0
-      if qty > 0 then
-        table.insert(mats, { key=it.id, label=it.name, qty=qty, base=tonumber(it.base_value or 0) or 0, type=it.type or "material", rarity=it.rarity or "common", color=itemsAPI.itemRarityColor(it) })
+-- --- Base layout ---
+function M.createBaseLayout()
+  local W, H = term.getSize()
+  local mainFrame = basalt.createFrame():setSize(W, H)
+
+  local topBar = mainFrame:addFrame()
+      :setSize(W, 3)
+      :setPosition(1, 1)
+      :setBackground(colors.gray)
+      :hide()
+
+  local displayFrame = mainFrame:addFrame()
+      :setSize(W, H - 2)
+      :setPosition(0, 3)
+      :setZIndex(0)
+      :hide()
+
+  local SIDEBAR_W = 16
+  local sidebar = mainFrame:addScrollableFrame()
+      :setBackground(colors.lightGray)
+      :setPosition(W, 4)
+      :setSize(SIDEBAR_W, H - 3)
+      :setZIndex(25)
+      :setDirection("vertical")
+      :hide()
+
+  -- Sidebar open/close helpers + close button on the LEFT edge
+  local function _sidebarExpandedX() return W - (SIDEBAR_W - 1) end
+  local function _sidebarHiddenX()   return W end
+
+        local openBtn = sidebar:addButton()
+      :setText("<")
+      :setPosition(1, 1)
+      :setSize(1, 16)
+      :setBackground(colors.lightGray)
+      :setForeground(colors.black)
+
+  function M.openSidebar()
+    if not sidebar then return end
+    sidebar:setPosition(_sidebarExpandedX(), 4)
+        local closeBtn = sidebar:addButton()
+      :setText(">")
+      :setPosition(1, 1)
+      :setSize(1, 17)
+      :setBackground(colors.lightGray)
+      :setForeground(colors.black)
+      :onClick(function() M.closeSidebar() end)
+  end
+
+  function M.closeSidebar()
+    if not sidebar then return end
+    sidebar:setPosition(_sidebarHiddenX(), 4)
+      local openBtn = sidebar:addButton()
+      :setText("<")
+      :setPosition(1, 1)
+      :setSize(1, 17)
+      :setBackground(colors.lightGray)
+      :setForeground(colors.black)
+      :onClick(function() M.openSidebar() end)
+  end
+
+
+
+
+
+
+  sidebar:onGetFocus(function(self)
+    M.openSidebar()
+      -- Close button at the far LEFT edge of the sidebar
+  end)
+  sidebar:onLoseFocus(function(self)
+    M.closeSidebar()
+      -- Close button at the far LEFT edge of the sidebar
+  end)
+
+  -- Inventory overlay shell (tabs created by caller)
+  local inventoryOverlay = mainFrame:addMovableFrame()
+      :setSize(42, 16)
+      :setPosition((W - 40) / 2, 3)
+      :setBackground(colors.lightGray)
+      :setZIndex(45)
+      :hide()
+  inventoryOverlay:addLabel():setText("Inventory"):setPosition(2, 1)
+  inventoryOverlay:addButton()
+      :setText(" x ")
+      :setPosition(40, 1)
+      :setSize(3, 1)
+      :setBackground(colors.red)
+      :setForeground(colors.white)
+      :onClick(function() inventoryOverlay:hide() end)
+
+  -- HUD labels (user can fill/update later)
+  local timeLabel  = topBar:addLabel():setText("Time: --"):setPosition(2, 1)
+  local moneyLabel = topBar:addLabel():setText("Money: $0"):setPosition(25, 2)
+  local stageLabel = topBar:addLabel():setText("Stage: --"):setPosition(25, 1)
+  local levelLabel = topBar:addLabel():setText("lvl 1"):setPosition(1,3):setForeground(colors.yellow)
+  local levelBarLabel = topBar:addLabel():setText("|----------| 0%"):setPosition(7,3):setForeground(colors.blue)
+
+  -- Speed buttons
+  function M.updateSpeedButtons()
+    local speedButtons = M.refs.speedButtons or {}
+    local current = timeAPI.getSpeed()
+    for mode, btn in pairs(speedButtons) do
+      if mode == current then
+        if mode == "pause" then btn:setBackground(colors.red)
+        elseif mode == "normal" then btn:setBackground(colors.green)
+        elseif mode == "2x" then btn:setBackground(colors.blue)
+        elseif mode == "4x" then btn:setBackground(colors.orange)
+        end
+        btn:setForeground(colors.white)
+      else
+        btn:setBackground(colors.lightGray):setForeground(colors.gray)
       end
     end
   end
-  table.sort(mats, function(a,b)
-    if a.type ~= b.type then return a.type < b.type end
-    local ra, rb = _rarityRank(a), _rarityRank(b); if ra ~= rb then return ra > rb end
-    return (a.label or a.key) < (b.label or b.key)
-  end)
-  return mats
-end
 
-local function safeGetProducts()
-  local have = _inventoryMap()
-  local known = {}; for _, it in ipairs(itemsAPI.getAll()) do known[it.id]=true end
-  local out = {}
-  for k,v in pairs(have) do
-    if not known[k] then local q=tonumber(v) or 0; if q>0 then table.insert(out, { key=k, label=k, qty=q, type="product" }) end end
+  local function updateSpeedButtonColors(speedButtons)
+    local current = timeAPI.getSpeed()
+    for mode, btn in pairs(speedButtons) do
+      if mode == current then
+        if mode == "pause" then btn:setBackground(colors.red)
+        elseif mode == "normal" then btn:setBackground(colors.green)
+        elseif mode == "2x" then btn:setBackground(colors.blue)
+        elseif mode == "4x" then btn:setBackground(colors.orange)
+        end
+        btn:setForeground(colors.white)
+      else
+        btn:setBackground(colors.lightGray):setForeground(colors.gray)
+      end
+    end
   end
-  table.sort(out, function(a,b) return (a.label or a.key) < (b.label or b.key) end)
-  return out
+
+  local speedButtons = {}
+  speedButtons["pause"] = topBar:addButton():setText("II"):setPosition(W - 44, 2):setSize(4,1)
+      :onClick(function() timeAPI.setSpeed("pause"); updateSpeedButtonColors(speedButtons) end)
+  speedButtons["normal"] = topBar:addButton():setText(">"):setPosition(W - 40, 2):setSize(4,1)
+      :onClick(function() timeAPI.setSpeed("normal"); updateSpeedButtonColors(speedButtons) end)
+  speedButtons["2x"] = topBar:addButton():setText(">>"):setPosition(W - 36, 2):setSize(4,1)
+      :onClick(function() timeAPI.setSpeed("2x"); updateSpeedButtonColors(speedButtons) end)
+  speedButtons["4x"] = topBar:addButton():setText(">>>"):setPosition(W - 32, 2):setSize(4,1)
+      :onClick(function() timeAPI.setSpeed("4x"); updateSpeedButtonColors(speedButtons) end)
+
+  updateSpeedButtonColors(speedButtons)
+  M.updateSpeedButtons()
+
+  -- Pause button + menu shell (caller wires callbacks)
+  local pauseBtn = topBar:addButton()
+      :setText("Pause")
+      :setPosition(W - 50, 2)
+      :setSize(6, 1)
+      :setBackground(colors.red)
+      :setForeground(colors.white)
+
+  local borderMenu = mainFrame:addFrame()
+      :setSize(30, 14)
+      :setPosition((W - 30) / 2, 5)
+      :setBackground(colors.lightGray)
+      :hide()
+
+  local pauseMenu = borderMenu:addFrame()
+      :setSize(28, 12)
+      :setPosition(2, 2)
+      :setBackground(colors.white)
+      :setZIndex(50)
+  pauseMenu:addLabel():setText("[--------------------------]"):setPosition(1, 1):setForeground(colors.black)
+  pauseMenu:addLabel():setText("Pause Menu"):setPosition(10, 1):setForeground(colors.gray)
+  local function showPause() borderMenu:show(); pauseMenu:show() end
+  local function hidePause() borderMenu:hide(); pauseMenu:hide() end
+  local pauseResumeBtn = pauseMenu:addButton()
+    :setText("Resume")
+    :setPosition(3, 3)
+    :setSize(24, 1)
+    :setBackground(colors.green)
+    :setForeground(colors.white)
+    :onClick(function() hidePause(); if M._onPauseResume then M._onPauseResume() end end)
+local pauseSaveBtn = pauseMenu:addButton()
+    :setText("Save Game")
+    :setPosition(3, 5)
+    :setSize(24, 1)
+    :setBackground(colors.blue)
+    :setForeground(colors.white)
+    :onClick(function() if M._onPauseSave then M._onPauseSave() end end)
+local pauseLoadBtn = pauseMenu:addButton()
+    :setText("Load Game")
+    :setPosition(3, 7)
+    :setSize(24, 1)
+    :setBackground(colors.blue)
+    :setForeground(colors.white)
+    :onClick(function() if M._onPauseLoad then M._onPauseLoad() end end)
+local pauseSettingsBtn = pauseMenu:addButton()
+    :setText("Settings")
+    :setPosition(3, 9)
+    :setSize(24, 1)
+    :setBackground(colors.blue)
+    :setForeground(colors.white)
+    :onClick(function() if M._onPauseSettings then M._onPauseSettings() end end)
+local pauseQuitBtn = pauseMenu:addButton()
+    :setText("Quit to Main Menu")
+    :setPosition(3, 11)
+    :setSize(24, 1)
+    :setBackground(colors.red)
+    :setForeground(colors.white)
+    :onClick(function() if M._onPauseQuitToMenu then M._onPauseQuitToMenu() end end)
+
+pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen() end end)
+  -- Top bar quick access buttons
+  local invBtn = topBar:addButton()
+      :setText("| INV |")
+      :setPosition(34, 3)
+      :setSize(7, 1)
+      :setBackground(colors.gray)
+      :setForeground(colors.white)
+      :onClick(function() if M._onTopInv then M._onTopInv() end end)
+  local craftBtn = topBar:addButton()
+      :setText("| CRAFT |")
+      :setPosition(42, 3)
+      :setSize(9, 1)
+      :setBackground(colors.gray)
+      :setForeground(colors.orange)
+      :onClick(function() if M._onTopCraft then M._onTopCraft() end end)
+
+  -- Expose everything
+  M.refs.mainFrame = mainFrame
+  M.refs.displayFrame = displayFrame
+  M.refs.topBar = topBar
+  M.refs.sidebar = sidebar
+  M.refs.inventoryOverlay = inventoryOverlay
+  M.refs.loading = buildLoading(mainFrame)
+  M.refs.speedButtons = speedButtons
+  M.refs.labels = {
+    timeLabel = timeLabel, moneyLabel = moneyLabel, stageLabel = stageLabel,
+    levelLabel = levelLabel, levelBarLabel = levelBarLabel
+  }
+  M.refs.pause = {
+    border = borderMenu, content = pauseMenu,
+    show = showPause, hide = hidePause, button = pauseBtn
+  }
+  M.refs.frames = { root = mainFrame, topbar = topBar, display = displayFrame, overlay = inventoryOverlay, pause = pauseMenu }
+
+  -- Make them available globally for legacy code that referenced globals
+  _G.mainFrame        = mainFrame
+  _G.topBar           = topBar
+  _G.sidebar          = sidebar
+  _G.displayFrame     = displayFrame
+  _G.inventoryOverlay = inventoryOverlay
+  _G.spawnToast       = M.spawnToast
+  _G.pauseMenu        = pauseMenu
+
+  return M.refs
 end
 
-local function safeGetAll()
-  local a = {}; for _,it in ipairs(safeGetMaterials()) do table.insert(a,it) end; for _,it in ipairs(safeGetProducts()) do table.insert(a,it) end; return a
+function M.showRoot()
+  if M.refs.topBar then M.refs.topBar:show() end
+  if M.refs.displayFrame then M.refs.displayFrame:show() end
+  if M.refs.sidebar then M.refs.sidebar:show() end
 end
 
-local function getProductPrice(keyOrName)
-  if economyAPI and economyAPI.getPrice then
-    local p = economyAPI.getPrice(keyOrName); if type(p)=="number" then return p end
+-- Convenience HUD updaters (caller may call these each tick)
+function M.setHUDTime(text)      if M.refs.labels and M.refs.labels.timeLabel then M.refs.labels.timeLabel:setText(text) end end
+function M.setHUDMoney(text)     if M.refs.labels and M.refs.labels.moneyLabel then M.refs.labels.moneyLabel:setText(text) end end
+function M.setHUDStage(text)     if M.refs.labels and M.refs.labels.stageLabel then M.refs.labels.stageLabel:setText(text) end end
+function M.setHUDLevel(text)     if M.refs.labels and M.refs.labels.levelLabel then M.refs.labels.levelLabel:setText(text) end end
+function M.setHUDLevelBar(text)  if M.refs.labels and M.refs.labels.levelBarLabel then M.refs.labels.levelBarLabel:setText(text) end end
+
+-- Background helper
+
+-- Frame accessors / toast routing
+function M.getFrame(name)
+  if not name then return M.refs.mainFrame end
+  if M.refs.frames and M.refs.frames[name] then return M.refs.frames[name] end
+  return M.refs.mainFrame
+end
+
+-- route to topbar by default when target is pause to avoid covering menu content
+function M.toast(where, text, x, y, color, duration)
+  local target = M.getFrame(where)
+  if where == "pause" then target = M.refs.topBar or target end
+  return M.spawnToast(target, text, x, y, color, duration)
+end
+
+function M.refreshStageBackground()
+    stageAPI.refreshBackground(M.refs.displayFrame)
+end
+
+
+
+function M.onPauseResume(fn) M._onPauseResume = fn end
+function M.onPauseOpen(fn) M._onPauseOpen = fn end
+function M.onPauseSave(fn) M._onPauseSave = fn end
+function M.onPauseLoad(fn) M._onPauseLoad = fn end
+function M.onPauseSettings(fn) M._onPauseSettings = fn end
+function M.onPauseQuitToMenu(fn) M._onPauseQuitToMenu = fn end
+function M.onStageChanged(fn) M._onStageChanged = fn end
+
+function M.onTopInv(fn) M._onTopInv = fn end
+function M.onTopCraft(fn) M._onTopCraft = fn end
+
+-- Lightweight page manager (groups children into named frames)
+local _pages = _pages or {}
+
+-- Pages that should NOT create a container (paint directly on displayFrame)
+local NO_CONTAINER = { development = true, stock = true, main = true, upgrades = true } 
+
+function M.ensurePage(name)
+  if not name or name == "" then return M.refs.displayFrame end
+  if NO_CONTAINER[name] then
+    -- Draw directly on the stage-backed displayFrame
+    return M.refs.displayFrame
   end
-  local s = saveAPI.get(); local ep = (s.economy and s.economy.prices) or {}
-  return tonumber(ep[keyOrName] or 0) or 0
-end
 
-local function populateMaterials()
-  local tab = inventoryTabs["Materials"]; Wipe(tab); _mkHeader(tab)
-  local y=2; for _, it in ipairs(safeGetMaterials()) do _mkRow(tab,y,_safeText(it.label,29), it.qty, it.base, it.color); y=y+1 end
-end
-local function populateProducts()
-  local tab = inventoryTabs["Products"]; Wipe(tab); _mkHeaderProducts(tab)
-  local y=2; for _, it in ipairs(safeGetProducts()) do
-    local shown = it.label
-    if type(shown)=="string" and shown:find("^drink:") and craftAPI.prettyNameFromKey then shown = craftAPI.prettyNameFromKey(shown) end
-    local price = getProductPrice(it.key)
-    _mkRowProduct(tab,y,_safeText(shown,28), it.qty, price); y=y+1
-  end
-end
-local function populateAll()
-  local tab = inventoryTabs["All"]; Wipe(tab); _mkHeader(tab)
-  local y=2; for _, it in ipairs(safeGetAll()) do
-    local shown = it.label or it.key
-    if type(shown)=="string" and shown:find("^drink:") and craftAPI.prettyNameFromKey then shown = craftAPI.prettyNameFromKey(shown) end
-    local price = getProductPrice(it.label or it.key)
-    local tag = (it.type=="material") and "M" or "P"
-    _mkRow(tab,y,_safeText(("["..tag.."] "..shown),26), it.qty, it.base or price, it.color); y=y+1
-  end
-end
+  -- For normal pages, create (or reuse) an isolated container
+  if _pages[name] and _pages[name].frame then return _pages[name].frame end
 
--- ========
--- Crafting
--- ========
-local _craftSel = _craftSel or { product="Lemonade", base=nil, fruit=nil, sweet=nil, topping=nil }
+  local W, H = term.getSize()
+  local f = M.refs.displayFrame:addFrame()
+      :setSize(W, H - 2)
+      :setPosition(1, 1)    -- matches your content coordinates
+      :setZIndex(10)        -- above stage bg, below overlays
+      :hide()
 
--- Compact stepper (keeps same look/feel)
-local function mkStepper(parent, x, y, w, color)
-  local f = parent:addFrame():setPosition(x,y):setSize(w,1):setBackground(colors.white):setForeground(color or colors.white)
-  f._items, f._i, f._onChange = {}, 1, nil
-  local lblW = w - 4
-  local function updateLabel()
-    local t = f._items[f._i] or ""
-    if type(t)=="table" then t = t.text or t[1] or "" end
-    if f._lbl then f._lbl:setText(t) end
-  end
-  f._lbl = f:addLabel():setPosition(1,1):setSize(lblW,1):setText("")
-  local btnL=f:addButton():setPosition(lblW-3,1):setSize(3,1):setText(" <<"):setBackground(colors.white)
-    :onClick(function() if #f._items==0 then return end; f._i=(f._i-2)%#f._items+1; updateLabel(); if f._onChange then f._onChange() end end)
-  local btnR=f:addButton():setPosition(lblW,1):setSize(3,1):setText(">>"):setBackground(colors.white)
-    :onClick(function() if #f._items==0 then return end; f._i=(f._i)%#f._items+1;   updateLabel(); if f._onChange then f._onChange() end end)
-  function f:setItems(list) self._items=list or {}; self._i=(#self._items>0) and 1 or 1; updateLabel(); return self end
-  function f:setIndex(i) if #self._items==0 then self._i=1; updateLabel(); return self end; if i<1 then i=1 elseif i>#self._items then i=#self._items end; self._i=i; updateLabel(); return self end
-  function f:getText() local t=self._items[self._i]; if type(t)=="table" then t=t.text or t[1] end; return t end
-  function f:onChange(fn) self._onChange=fn; return self end
+      stageAPI.refreshBackground(f)
+
+  _pages[name] = { frame = f, built = false }
   return f
 end
 
-local function cleanLabel(label)
-  if type(label)~="string" then return label end
-  local name = label:match("^(.-)%s*|%s*rq:") or label
-  return (name:gsub("%s+$",""))
+function M.showPage(name)
+  if NO_CONTAINER[name] then return end      -- never show/hide displayFrame
+  local p = _pages[name]; if p and p.frame then p.frame:show() end
 end
 
-local function idByLabel(label) return itemsAPI.idByName(label) end
-local function reqByLabel(label) return itemsAPI.craftReqByName(label) or 0 end
-
-local function optionLabelsForType(typeName, haveMap, playerLevel, currentProduct)
-  local list = {}
-  currentProduct = currentProduct or (_craftSel.product or "Lemonade")
-  local iceShaver = upgradeAPI and upgradeAPI.allowShavedIceSubstitution and upgradeAPI.allowShavedIceSubstitution()
-
-  local function push(name, id, req, qtyKey)
-    local qty = tonumber(haveMap[qtyKey or id] or 0) or 0
-    if qty > 0 then table.insert(list, ("%s|rq:%d|S:%d"):format(name, req, qty)) end
-  end
-
-  if currentProduct == "Italian Ice" then
-    if typeName == "base" then
-      for _, it in ipairs(itemsAPI.listByType("base")) do
-        if itemsAPI.isUnlockedForLevel(it.id, playerLevel) then push(it.name, it.id, tonumber(it.craft_req or 0) or 0) end
-      end
-    elseif typeName == "fruit" then
-      if iceShaver then
-        local shaved = itemsAPI.getByName("Shaved Ice"); if shaved then
-          local iceId = itemsAPI.idByName("Ice Cubes"); local req=2
-          if iceId then push(shaved.name, shaved.id, req, iceId) end
-        end
-      end
-    elseif typeName == "sweet" then
-      for _, it in ipairs(itemsAPI.listByType("sweet")) do
-        if itemsAPI.isUnlockedForLevel(it.id, playerLevel) and itemsAPI.isSyrup(it.id) then push(it.name, it.id, tonumber(it.craft_req or 0) or 0) end
-      end
-    elseif typeName == "topping" then
-      for _, it in ipairs(itemsAPI.listByType("topping")) do
-        if itemsAPI.isUnlockedForLevel(it.id, playerLevel) then
-          local nameLower = (it.name or ""):lower()
-          if nameLower ~= "ice" and nameLower ~= "ice cubes" and nameLower ~= "shaved ice" then
-            push(it.name, it.id, tonumber(it.craft_req or 0) or 0)
-          end
-        end
-      end
-      for _, it in ipairs(itemsAPI.listByType("fruit")) do
-        if itemsAPI.isUnlockedForLevel(it.id, playerLevel) then
-          local qty = tonumber(haveMap[it.id] or 0) or 0
-          if qty > 0 then table.insert(list, ("%s| rq:%d | S:%d"):format(it.name, 1, qty)) end
-        end
-      end
-    end
-  else
-    for _, it in ipairs(itemsAPI.listByType(typeName)) do
-      if itemsAPI.isUnlockedForLevel(it.id, playerLevel) then
-        local req = tonumber(it.craft_req or 0) or 0
-        if typeName == "fruit" then
-          local delta = upgradeAPI.fruitReqDelta and upgradeAPI.fruitReqDelta() or 0
-          req = math.max(0, req + delta)
-        end
-        if typeName == "topping" then
-          local nameLower = (it.name or ""):lower()
-          if nameLower == "shaved ice" then goto continue end
-        end
-        push(it.name, it.id, req)
-      end
-      ::continue::
-    end
-  end
-  table.sort(list)
-  return list
+function M.hidePage(name)
+  if NO_CONTAINER[name] then return end      -- never show/hide displayFrame
+  local p = _pages[name]; if p and p.frame then p.frame:hide() end
 end
 
-local ddProduct -- forward
-
-local function populateCrafting()
-  local tab = inventoryTabs["Crafting"]; Wipe(tab)
-  tab:addLabel():setPosition(1,1):setText("Select Items to craft x5 for:")
-  ddProduct = tab:addDropdown():setPosition(30,1):setSize(12,1):setZIndex(40)
-
-  local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
-  ddProduct:addItem("Lemonade")
-  if (upgradeAPI and upgradeAPI.allowShavedIceSubstitution and upgradeAPI.allowShavedIceSubstitution()) and L >= 10 then
-    ddProduct:addItem("Italian Ice")
-  end
-
-  local function _selectProductByName(name)
-    if not ddProduct or not ddProduct.getItemCount then return false end
-    for i=1, ddProduct:getItemCount() do local it=ddProduct:getItem(i); local v=(type(it)=="table" and it.text) or it
-      if v==name then ddProduct:selectItem(i); return true end end
-    return false
-  end
-
-  if not _craftSel.product or not _selectProductByName(_craftSel.product) then
-    ddProduct:selectItem(1); local it=ddProduct:getItem(1); _craftSel.product=(type(it)=="table" and it.text) or it or "Lemonade"
-  end
-
-  local have = _inventoryMap()
-  local currentProduct = _craftSel.product or "Lemonade"
-  local baseOpts    = optionLabelsForType("base",    have, L, currentProduct)
-  local fruitOpts   = optionLabelsForType("fruit",   have, L, currentProduct)
-  local sweetOpts   = optionLabelsForType("sweet",   have, L, currentProduct)
-  local toppingOpts = optionLabelsForType("topping", have, L, currentProduct); if #toppingOpts==0 or toppingOpts[1]~="None" then table.insert(toppingOpts,1,"None") end
-  if #baseOpts==0    then baseOpts    = { (itemsAPI.listByType("base")[1]    or {}).name or "Plastic Cup" } end
-  if #fruitOpts==0   then fruitOpts   = { (itemsAPI.listByType("fruit")[1]   or {}).name or "Lemon" } end
-  if #sweetOpts==0   then sweetOpts   = { (itemsAPI.listByType("sweet")[1]   or {}).name or "Sugar" } end
-  if #toppingOpts==0 then toppingOpts = { "None" } end
-
-  local function buildColorMap(opts)
-    local map = {}; for _, name in ipairs(opts) do
-      if name=="None" or name=="" then map[name]=colors.gray
-      else
-        local baseName = cleanLabel(name)
-        local id = idByLabel(baseName)
-        map[name] = (itemsAPI.itemRarityColor and itemsAPI.itemRarityColor(id or baseName)) or colors.white
-      end
-    end; return map
-  end
-  local baseColMap, fruitColMap, sweetColMap, toppingColMap = buildColorMap(baseOpts), buildColorMap(fruitOpts), buildColorMap(sweetOpts), buildColorMap(toppingOpts)
-
-  local y=4
-  local lblFruit = (currentProduct == "Italian Ice") and "Ice:" or "Fruit:"
-  tab:addLabel():setPosition(2,y):setText("Cups:");     local ddBase    = mkStepper(tab,12,y,32); y=y+1; ddBase:setItems(baseOpts)
-  tab:addLabel():setPosition(2,y):setText(lblFruit);    local ddFruit   = mkStepper(tab,12,y,32); y=y+1; ddFruit:setItems(fruitOpts)
-  tab:addLabel():setPosition(2,y):setText("Sweetener:");local ddSweet   = mkStepper(tab,12,y,32); y=y+1; ddSweet:setItems(sweetOpts)
-  tab:addLabel():setPosition(2,y):setText("Topping:");  local ddTopping = mkStepper(tab,12,y,32); y=y+1; ddTopping:setItems(toppingOpts)
-  
-  local function _applyPrevious(stepper, opts, prev)
-    if not prev or prev=="" then return end
-    local basePrev = cleanLabel(prev)
-    local idx = 1
-    for i,txt in ipairs(opts) do
-      local nm = cleanLabel(txt)
-      if nm == basePrev then idx = i; break end
-    end
-    if stepper.setIndex then stepper:setIndex(idx) end
-  end
-  _applyPrevious(ddBase,    baseOpts,    _craftSel.base)
-  _applyPrevious(ddFruit,   fruitOpts,   _craftSel.fruit)
-  _applyPrevious(ddSweet,   sweetOpts,   _craftSel.sweet)
-  _applyPrevious(ddTopping, toppingOpts, _craftSel.topping)
-
-  local function applyStepColor(stepper, list, cmap) local v=stepper:getText() or list[1]; local col=(cmap and cmap[v]) or colors.white; (stepper._lbl or stepper):setForeground(col) end
-  applyStepColor(ddBase,baseOpts,baseColMap); applyStepColor(ddFruit,fruitOpts,fruitColMap); applyStepColor(ddSweet,sweetOpts,sweetColMap); applyStepColor(ddTopping,toppingOpts,toppingColMap)
-
-  local status   = tab:addLabel():setPosition(2,12):setSize(28,1):setText("")
-  local craftBtn = tab:addButton():setPosition(34,12):setSize(5,1):setText("Craft")
-
-  local function pick(stepper, list) local v=stepper:getText(); if not v or v=="" then v=list[1] end; return v end
-
-  local function computePossible()
-    local base    = cleanLabel(pick(ddBase,baseOpts))
-    local fruit   = cleanLabel(pick(ddFruit,fruitOpts))
-    local sweet   = cleanLabel(pick(ddSweet,sweetOpts))
-    local topping = cleanLabel(pick(ddTopping,toppingOpts))
-    local needs = {}
-    local bk, fk, sk = idByLabel(base), idByLabel(fruit), idByLabel(sweet)
-    local tk         = (topping ~= "None") and idByLabel(topping) or nil
-
-    local n
-    local currentProduct = _craftSel.product or "Lemonade"
-    local iceShaver = upgradeAPI and upgradeAPI.allowShavedIceSubstitution and upgradeAPI.allowShavedIceSubstitution()
-
-    n = reqByLabel(base); if bk and n and n > 0 then needs[bk] = n end
-
-    if currentProduct == "Italian Ice" then
-      if iceShaver then
-        local iceId = idByLabel("Ice Cubes"); if iceId then needs[iceId] = (needs[iceId] or 0) + 2 end
-      else return 0, base, fruit, sweet, topping end
-      local swId = idByLabel(sweet); if not (itemsAPI.isSyrup and (itemsAPI.isSyrup(swId) or itemsAPI.isSyrup(sweet))) then return 0, base, fruit, sweet, topping end
-    else
-      n = reqByLabel(fruit); if fk and n and n > 0 then local delta = upgradeAPI.fruitReqDelta and upgradeAPI.fruitReqDelta() or 0; n = math.max(0, n + delta); if n>0 then needs[fk] = n end end
-    end
-
-    n = reqByLabel(sweet); if sk and n and n>0 then needs[sk]=n end
-
-    if tk then
-      n = reqByLabel(topping); if n and n>0 then needs[tk]=n end
-      if currentProduct ~= "Italian Ice" and iceShaver and topping=="Shaved Ice" then
-        local iceId = idByLabel("Ice Cubes"); if iceId then needs[tk]=nil; needs[iceId]=(needs[iceId] or 0) + n end
-      end
-      if currentProduct == "Italian Ice" then
-        local topId = idByLabel(topping); local it = itemsAPI.getById(topId) or itemsAPI.getByName(topping)
-        if it and it.type=="fruit" then needs[topId] = 1 end
-      end
-    end
-
-    local inv = _inventoryMap()
-    local max = math.huge
-    for k, need in pairs(needs) do if need > 0 then max = math.min(max, math.floor((inv[k] or 0) / need)) end end
-    if max == math.huge then max = 0 end
-    return max, base, fruit, sweet, topping
-  end
-
-  local function refreshStatus()
-    local can = computePossible()
-    local count = type(can)=="number" and can or 0
-    status:setText("Can craft: "..tostring(count).."  (x5 per craft)")
-    if craftBtn.setEnabled then craftBtn:setEnabled(count>0) end
-    if craftBtn.setBackground then craftBtn:setBackground((count>0) and colors.green or colors.gray) end
-  end
-
-  ddBase:onChange(function()  applyStepColor(ddBase,baseOpts,baseColMap);   _craftSel.base=ddBase:getText();    refreshStatus() end)
-  ddFruit:onChange(function() applyStepColor(ddFruit,fruitOpts,fruitColMap);_craftSel.fruit=ddFruit:getText();  refreshStatus() end)
-  ddSweet:onChange(function() applyStepColor(ddSweet,sweetOpts,sweetColMap);_craftSel.sweet=ddSweet:getText();  refreshStatus() end)
-  ddTopping:onChange(function()applyStepColor(ddTopping,toppingOpts,toppingColMap);_craftSel.topping=ddTopping:getText();refreshStatus() end)
-
-  ddProduct:onChange(function()
-    local v=ddProduct:getValue(); if type(v)=="table" and v.text then v=v.text end
-    if type(v)=="string" and v~="" then _craftSel.product=v end
-    populateCrafting()
-  end)
-
-  craftBtn:onClick(function()
-    local can, base, fruit, sweet, topping = computePossible()
-    local count = tonumber(can or 0) or 0
-    if count <= 0 then return end
-
-    _craftSel.base, _craftSel.fruit, _craftSel.sweet, _craftSel.topping =
-      (cleanLabel(ddBase:getText())), (cleanLabel(ddFruit:getText())), (cleanLabel(ddSweet:getText())), (cleanLabel(ddTopping:getText()))
-
-    local chosen = (_craftSel.product or "Lemonade"):match("^%s*(.-)%s*$")
-    local ok, key, label = craftAPI.craftItem(chosen, base, fruit, sweet, topping)
-    if ok then
-      local computedPrice = craftAPI.computeCraftPrice(base, fruit, sweet, topping)
-      if economyAPI and economyAPI.setPrice then economyAPI.setPrice(key, computedPrice) end
-      refreshInventoryTabs()
-      uiAPI.toast("overlay", ("Crafted: "..tostring(label).." x5"), 3, 13, colors.orange, 2.2)
-    else
-      status:setText(_safeText("Error: "..tostring(label), 28))
-    end
-  end)
-
-  refreshStatus()
+function M.teardownPage(name)
+  -- For isolated pages, clear their container; for background pages,
+  -- caller should remove its own widgets as usual.
+  local p = _pages[name]
+  if p and p.frame then pcall(function() p.frame:removeChildren() end); p.built = false end
 end
 
-function refreshInventoryTabs()
-  populateMaterials()
-  populateProducts()
-  populateCrafting()
-  populateAll()
-end
-
-local function showInventoryOverlay()
-  refreshInventoryTabs()
-  inventoryOverlay:show()
-  if tabBar.setItemIndex then tabBar:setItemIndex(1) end
-  selectInventoryTab("Materials")
-end
-
--- Hook the quick buttons in the top bar
-uiAPI.onTopInv(function() showInventoryOverlay() end)
-uiAPI.onTopCraft(function()
-  showInventoryOverlay()
-  if tabBar.setItemIndex then tabBar:setItemIndex(3) end
-  selectInventoryTab("Crafting")
-end)
-
--- ============
--- Upgrades UI
--- ============
-local upgradeRowRefs, upgradeRowY = {}, {}
-local LEFT_W, EFFECT_W, BTN_W, BTN_X = 26, 36, 15, 34
-local function _pad(text, w) text=tostring(text or ""); local n=w-#text; return (n>0) and (text..string.rep(" ",n)) or text:sub(1,w) end
-local function _canAfford(cost) return (economyAPI and economyAPI.canAfford and economyAPI.canAfford(cost)) or true end
-local function _rowColor(state)  return (state=="locked" or state=="owned") and colors.gray or colors.black end
-local function _effectColor(s)   return (s=="locked" or s=="owned") and colors.gray or colors.yellow end
-local function _btnBg(en)        return en and colors.blue or colors.lightGray end
-local function _btnFg(en)        return en and colors.white or colors.gray end
-local function _prettyName(k) return ({seating="Seating",marketing="Marketing",awning="Awning",ice_shaver="Ice Shaver",juicer="Juicer",exp_boost="EXP Boost"})[k] or k end
-
-local function _expMultNow() if upgradeAPI and upgradeAPI.expBoostFactor then return upgradeAPI.expBoostFactor() end; local s=saveAPI.get(); local u=s.upgrades or {}; local lvl=tonumber(u.exp_boost or 0) or 0; local M={1.0,1.5,2.25,3.5,4.25,5.0}; return M[math.min(lvl,5)+1] end
-local function _expMultNext(lvl) local def = upgradeAPI.catalog and upgradeAPI.catalog.exp_boost; return def and def.multipliers and def.multipliers[(lvl or 0)+1] end
-local function _effectText(key, lvl)
-  if key=="seating"   then return ("Buy chance: %.0f%% -> %.0f%%"):format( 7*(lvl or 0), 7*((lvl or 0)+1) )
-  elseif key=="marketing" then return ("Customers/hr: x%.2f -> x%.2f"):format(1+0.15*(lvl or 0), 1+0.15*((lvl or 0)+1))
-  elseif key=="awning"    then return ("Price tolerance: x%.2f -> x%.2f"):format(1-0.12*(lvl or 0), 1-0.12*((lvl or 0)+1))
-  elseif key=="exp_boost" then local cur=_expMultNow(); local nxt=_expMultNext(lvl); return nxt and ("XP boost: x%.2f -> x%.2f"):format(cur, nxt) or ("XP boost: x%.2f (Max)"):format(cur)
-  elseif key=="ice_shaver" then return "Unlocks 'Italian Ice' product in Craft"
-  elseif key=="juicer"     then return "Fruit requirement: -1 when crafting" end
-  return ""
-end
-
-local function _destroyRow(key)
-  local refs = upgradeRowRefs[key]
-  if refs then for _,el in ipairs(refs) do if el and el.destroy then pcall(function() el:destroy() end) elseif el and el.remove then pcall(function() el:remove() end) end end end
-  upgradeRowRefs[key] = nil
-end
-
-local function buildUpgradeRow(key, y)
-  upgradeRowY[key] = y; _destroyRow(key)
-  local def = upgradeAPI.catalog[key]
-  local oneTime = def and def.one_time
-  local lvl     = (upgradeAPI.level and upgradeAPI.level(key)) or 0
-  local ownedOT = (upgradeAPI.has and upgradeAPI.has(key)) or false
-  local cost    = (upgradeAPI.cost and upgradeAPI.cost(key)) or 0
-  local canBuy, why = true, nil; if upgradeAPI.canPurchase then canBuy, why = upgradeAPI.canPurchase(key) end
-  local atCap = (not oneTime) and def and def.level_cap and (lvl >= def.level_cap)
-
-  local state = (oneTime and (ownedOT and "owned" or (canBuy and "buyable" or "locked"))) or ((atCap and "owned") or (canBuy and "buyable" or "locked"))
-  local leftText = (oneTime and ("%s   $%d  (%s)"):format(_prettyName(key), cost, ownedOT and "Unlocked" or "Locked")) or ("%s   Lv %d"):format(_prettyName(key), lvl)
-
-  local left = displayFrame:addLabel():setPosition(2,y):setSize(LEFT_W,1):setZIndex(50):setText(_pad(leftText, LEFT_W)):setForeground(_rowColor(state)):hide()
-  local eff  = displayFrame:addLabel():setPosition(2,y+1):setSize(EFFECT_W,1):setZIndex(50):setText(_pad(_effectText(key,lvl), EFFECT_W)):setForeground(_effectColor(state)):hide()
-
-  local btnText = (state=="locked" and "LOCKED") or (oneTime and (ownedOT and "Owned" or (key=="juicer" and "Upgrade req -1" or "Unlock Product"))) or ((atCap and "Maxed") or ("Lv "..(lvl+1).." - $"..tostring(cost)))
-  local enabled = (state~="locked") and not (oneTime and ownedOT) and not (not oneTime and atCap) and _canAfford(cost) and canBuy
-  local btn = displayFrame:addButton():setPosition(34,y):setSize(BTN_W,1):setText(btnText):setBackground(_btnBg(enabled)):setForeground(_btnFg(enabled)):setZIndex(20):hide()
-    :onClick(function()
-      local cBuy, whyNow = canBuy, why; if upgradeAPI.canPurchase then cBuy, whyNow = upgradeAPI.canPurchase(key) end
-      local okEnabled = (state~="locked") and not (oneTime and ownedOT) and not (not oneTime and atCap) and _canAfford(cost) and cBuy
-      if not okEnabled then uiAPI.toast("displayFrame", whyNow or "Locked", 17,3, colors.red,1.0); return end
-      local ok, msg = upgradeAPI.purchase(key, function(c) return economyAPI.spendMoney(c) end)
-      uiAPI.toast("displayFrame", msg or (ok and "Purchased!" or "Purchase failed"), 16,3, ok and colors.cyan or colors.red, 1.0)
-      buildUpgradeRow(key, y); if currentPage=="upgrades" then for _,el in ipairs(upgradeRowRefs[key] or {}) do if el.show then el:show() end end end
-    end)
-
-  upgradeRowRefs[key] = { left, eff, btn }
-  table.insert(pageElements.upgrades, left); table.insert(pageElements.upgrades, eff); table.insert(pageElements.upgrades, btn)
-  if currentPage=="upgrades" then left:show(); eff:show(); btn:show() end
-end
-
-local function rebuildUpgradesPage()
-  pcall(function() if uiAPI.killDevelopment then uiAPI.killDevelopment() end end)
-  _clearGroup("upgrades")
-  local y=3
-  table.insert(pageElements.upgrades, hdr); y=y+1
-  local Lvl = (levelAPI.getLevel and levelAPI.getLevel()) or 1
-  if upgradeAPI.isVisibleAtLevel("seating",    Lvl) then buildUpgradeRow("seating",    y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("marketing",  Lvl) then buildUpgradeRow("marketing",  y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("awning",     Lvl) then buildUpgradeRow("awning",     y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("exp_boost",  Lvl) then buildUpgradeRow("exp_boost",  y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("ice_shaver", Lvl) then buildUpgradeRow("ice_shaver", y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("juicer",     Lvl) then buildUpgradeRow("juicer",     y); y=y+2 end
-end
-
--- ==============
--- Main / Dev UI
--- ==============
-local function buildMainPage()
-  _clearGroup("main")
-  local guideBtn = displayFrame:addButton():setText("[??]"):setPosition(2,3):setSize(4,1):setBackground(colors.blue):setForeground(colors.black):hide()
-    :onClick(function()
-      local ok = false
-      if guideAPI and guideAPI.show then ok = pcall(function() guideAPI.show() end) end
-      if (not ok) and guideAPI and guideAPI.toggle then ok = pcall(function() guideAPI.toggle(true) end) end
-      if (not ok) and uiAPI and uiAPI.openGuide then ok = pcall(function() uiAPI.openGuide() end) end
-      if not ok then uiAPI.toast("displayFrame","Guide not available", 8,5, colors.red,1.5) end
-    end)
-    table.insert(pageElements.main, guideBtn)
-end
-
-local function buildDevelopmentPage()
-  -- development paints directly on displayFrame via uiAPI to avoid container overlap
-  uiAPI.buildDevelopmentPage()
-end
-
--- ==================
--- Page switcher glue
--- ==================
-local function hideAllPages()
-  for name, group in pairs(pageElements or {}) do
-    for _, el in ipairs(group) do
-      if el then if el.disable then pcall(function() el:disable() end) end; if el.hide then pcall(function() el:hide() end) end end
-    end
-  end
-  pcall(function() uiAPI.hideDevelopment() end)
-  pcall(function() if uiAPI.disableDevelopment then uiAPI.disableDevelopment() end end)
-  pcall(function() if uiAPI.killDevelopment then uiAPI.killDevelopment() end end)
-end
-
-currentPage = "main"
-local function switchPage(name)
-  if pageSelect and pageSelect.setItemIndex then
-    local idx = 1
-    if name=="development" then idx=2 elseif name=="stock" then idx=3 elseif name=="upgrades" then idx=4 end
-    _pageSelect_silent = true
-    pcall(function() pageSelect:setItemIndex(idx) end)
-    _pageSelect_silent = false
-  end
-  hideAllPages()
-  currentPage = name
-
-  -- Keep background correct
-  applyStageFromProgress()
-
-  if name == "stock" then
-    rebuildStockPage(); for _,el in ipairs(pageElements.stock) do if el.show then el:show() end end; return
-  elseif name == "upgrades" then
-    rebuildUpgradesPage(); for _,el in ipairs(pageElements.upgrades) do if el.show then el:show() end end; return
-  elseif name == "development" then
-    uiAPI.showDevelopment(); return
-  else
-    pcall(function() if uiAPI.killDevelopment then uiAPI.killDevelopment() end end)
-    if #pageElements.main == 0 then buildMainPage() end
-    for _,el in ipairs(pageElements.main) do if el.show then el:show() end end
-  end
-end
-
--- ==================
--- HUD / Level popup
--- ==================
-local function renderLevelHUD()
-  do
-    local prog = levelAPI.getProgress and levelAPI.getProgress() or { level=1, xpInto=0, xpToNext=1 }
-    local L = prog.level or (levelAPI.getLevel and levelAPI.getLevel()) or 1
-    _G._lastLevelSeen = _G._lastLevelSeen or L
-    if L > _G._lastLevelSeen then
-      _G._lastLevelSeen = L
-      -- Show unlocks popup (owned by this file for now to keep visuals same)
-      local border = mainFrame:addFrame():setSize(34,14):setPosition(12,5):setBackground(colors.lightGray):setZIndex(220)
-      local box    = border:addFrame():setSize(32,12):setPosition(2,2):setBackground(colors.white):setZIndex(221)
-      box:addLabel():setText("Level Up!"):setPosition(12,1):setForeground(colors.green)
-      local body   = box:addScrollableFrame():setPosition(3,5):setSize(26,6):setBackground(colors.white)
-      local lpSub  = box:addLabel():setText(("You reached level %d!"):format(L)):setPosition(3,3):setForeground(colors.black)
-      local items = {}
-      local hasPrev = {}
-      for _, it in ipairs(itemsAPI.getAll()) do if itemsAPI.isUnlockedForLevel(it.id, L-1) then hasPrev[it.id]=true end end
-      for _, it in ipairs(itemsAPI.getAll()) do if itemsAPI.isUnlockedForLevel(it.id, L) and not hasPrev[it.id] then table.insert(items, it.name or it.id) end end
-      table.sort(items)
-      local y=1; if #items==0 then body:addLabel():setText("No new unlocks this level."):setPosition(1,y); y=y+1
-      else for _,nm in ipairs(items) do body:addLabel():setText("- "..nm):setPosition(1,y); y=y+1 end end
-      box:addButton():setText("Continue"):setPosition(10,11):setSize(12,1):setBackground(colors.green):setForeground(colors.black)
-        :onClick(function() border:hide(); box:hide(); pcall(function() border:remove() end); pcall(function() box:remove() end) end)
-    end
-  end
-
-  local prog = levelAPI.getProgress and levelAPI.getProgress() or { level=1, xpInto=0, xpToNext=1 }
-  local lvl = prog.level or 1; local into = tonumber(prog.xpInto or 0) or 0; local need = tonumber(prog.xpToNext or 1) or 1; if need<=0 then need=1 end
-  local pct = math.floor((into/need)*100 + 0.5); if pct<0 then pct=0 elseif pct>100 then pct=100 end
-  local slots = 10; local filled = math.floor((into/need)*slots + 0.5); if filled<0 then filled=0 elseif filled>slots then filled=slots end
-  local bar = string.rep("#", filled)..string.rep("-", slots-filled)
-  uiAPI.setHUDLevel("lvl "..tostring(lvl)); uiAPI.setHUDLevelBar("|"..bar.."| "..tostring(pct).."%")
-end
-
--- ==================
--- Pause menu wiring
--- ==================
-uiAPI.onPauseOpen(function() timeAPI.setSpeed("pause"); uiAPI.updateSpeedButtons() end)
-uiAPI.onPauseResume(function() timeAPI.setSpeed("normal"); uiAPI.updateSpeedButtons() end)
-uiAPI.onPauseSave(function() saveAPI.save(); saveAPI.commit(); uiAPI.toast("pauseMenu","Game saved", 19,17, colors.green,1.7) end)
-uiAPI.onPauseLoad(function() saveAPI.load(); refreshUI(); uiAPI.toast("pauseMenu","Game loaded", 19,17, colors.yellow,1.7) end)
-uiAPI.onPauseSettings(function() uiAPI.toast("pauseMenu","Settings coming soon", 11,17, colors.gray,1.7) end)
-uiAPI.onPauseQuitToMenu(function()
-  saveAPI.save(); basalt.stop()
-  local ok, err = pcall(function() shell.run(fs.combine(root, "PixelCorp.lua")) end)
-  if not ok and err then print(err) end
-end)
-
--- =====================
--- Sales / Open Hours
--- =====================
-local openLabel = topBar:addLabel():setPosition(25,3):setText("Closed"):setForeground(colors.red)
-local function _isOpen()
-  local t = timeAPI.getTime(); local h = t.hour or 0; return (h >= 7 and h < 19)
-end
-
-local function buyProbability(price)
-  local SWEET_SPOT, BASE_WILL, PRICE_SLOPE = 9, 0.16, 0.04
-  local priceDelta  = (price or 0) - SWEET_SPOT
-  local priceFactor = 1.0 - (PRICE_SLOPE * priceDelta)
-  local p = BASE_WILL * priceFactor
-  if p < 0.02 then p = 0.02 end; if p > 0.95 then p = 0.95 end; return p
-end
-
-local function getSellableProducts()
-  local out = {}; local inv = _inventoryMap()
-  for k,q in pairs(inv) do if type(k)=="string" and k:sub(1,6)=="drink:" and tonumber(q or 0) > 0 then
-    local label = (craftAPI.prettyNameFromKey and craftAPI.prettyNameFromKey(k)) or k
-    table.insert(out, { key=k, label=label, qty=q })
-  end end
-  table.sort(out, function(a,b) return (a.label or a.key) < (b.label or b.key) end)
-  return out
-end
-
-local function trySellOnce()
-  local products = getSellableProducts(); if #products == 0 then return false end
-  local pick = products[math.random(1,#products)]
-  local price = getProductPrice(pick.key)
-  if math.random() < buyProbability(price) then
-    inventoryAPI.add(pick.key, -1)
-    if economyAPI and economyAPI.addMoney then economyAPI.addMoney(price, "Product sale: "..pick.label) end
-    local xpGrant = 0; pcall(function() local stageKey = (stageAPI and stageAPI.getStage and stageAPI.getStage()) or "lemonade"; local g = (levelAPI.onSale and select(1, levelAPI.onSale(pick.key, nil, stageKey))) or 0; xpGrant = g or 0 end)
-    uiAPI.toast("topbar", ("+$%d"):format(price), 36,2, colors.green,1.7)
-    uiAPI.toast("topbar", ("+%d xp"):format(math.floor(xpGrant+0.5)), 10,3, colors.green,1.7)
-    uiAPI.toast("displayFrame", ("Sold 1x %s"):format(pick.label), 9,18, colors.yellow,1.7)
-    if inventoryOverlay and inventoryOverlay.isVisible and inventoryOverlay:isVisible() then refreshInventoryTabs() end
-    return true
-  end
-  return false
-end
-
-timeAPI.onTick(function(_)
-  if not _isOpen() then openLabel:setText("Closed"):setForeground(colors.red); return end
-  openLabel:setText("Open"):setForeground(colors.green)
-
-  -- about 4 customers/hour baseline, paced per minute tick
-  local CUSTOMERS_PER_HOUR = 4
-  local lambdaPerMinute = (CUSTOMERS_PER_HOUR / 60.0)
-  -- integer attempts
-  for i=1, math.floor(lambdaPerMinute) do trySellOnce() end
-  -- fractional attempt
-  local rem = lambdaPerMinute - math.floor(lambdaPerMinute)
-  if rem > 0 and math.random() < rem then trySellOnce() end
-end)
-
--- ==============
--- UI Refreshers
--- ==============
-function refreshUI()
-  local t = timeAPI.getTime()
-  uiAPI.setHUDTime(string.format("Time: Y%d M%d D%d %02d:%02d", t.year, t.month, t.day, t.hour, t.minute))
-
-  -- Daily market refresh & page repaint if needed (6:00)
-  local s = saveAPI.get(); local day, hour = s.time.day, s.time.hour
-  if hour == 6 then
-    local stock = inventoryAPI.getAvailableStock()
-    -- Update visible labels if we happen to be on stock page
-    if currentPage == "stock" then rebuildStockPage(); for _,el in ipairs(pageElements.stock) do if el.show then el:show() end end end
-  end
-
-  -- Money/Stage HUD
-  local state = saveAPI.get()
-  local currentStageName = ({ odd_jobs="Odd Jobs", lemonade_stand="Lemonade Stand", warehouse="Warehouse Services", factory="Factory", highrise="High-Rise Corporation" })[state.player.progress] or "Odd Jobs"
-  uiAPI.setHUDMoney("Money: $" .. (state.player.money or 0))
-  uiAPI.setHUDStage("Stage: " .. currentStageName)
-
-  -- Keep background in sync with progress (also on Dev page)
-  applyStageFromProgress()
-
-  -- Level bar
-  renderLevelHUD()
-end
-
--- ============
--- Time thread
--- ============
-local timeThread = mainFrame:addThread()
-local function startTimeUpdates()
-  timeThread:start(function()
-    while true do
-      timeAPI.tick()
-      refreshUI()
-      local sp = timeAPI.getSpeed and timeAPI.getSpeed() or "normal"
-      local sleepTime = (sp == "pause") and 0.05 or (sp == "4x") and 0.15 or (sp == "2x") and 0.50 or 1
-      os.sleep(sleepTime)
-    end
-  end)
-end
-
--- ============
--- Initialization
--- ============
-local function initialize()
-_deferSwitch = switchPage
-  if not saveAPI.hasSave() then saveAPI.newGame() else saveAPI.load() end
-
-  parallel.waitForAny(
-    function() basalt.autoUpdate() end,
-    function()
-      uiAPI.setLoading("Loading backgrounds...", 10)
-      -- Preload & paint initial stage
-      applyStageFromProgress()
-      os.sleep(0.7)
-      uiAPI.setLoading("Building pages...", 40)
-      buildMainPage()
-      rebuildStockPage()
-      rebuildUpgradesPage()
-      -- sidebar removed; using dropdown
-      os.sleep(1.25)
-      uiAPI.setLoading("Starting time...", 70)
-      startTimeUpdates()
-      os.sleep(0.8)
-      uiAPI.setLoading("Ready", 100)
-      os.sleep(0.7)
-      uiAPI.showRoot()
-      uiAPI.hideLoading()
-
-      -- Kick off tutorial after UI is visible
-
-      -- Default page
-      switchPage("main")
-
-      while true do os.sleep(0.5) end
-    end
-  )
-end
-
-_deferSwitch = switchPage
-initialize()
+function M.pageBuilt(name)        return _pages[name] and _pages[name].built end
+function M.setPageBuilt(name, v)  if _pages[name] then _pages[name].built = not not v end end
+function M.getPageFrame(name)     return (NO_CONTAINER[name] and M.refs.displayFrame) or (_pages[name] and _pages[name].frame) end
+return M
