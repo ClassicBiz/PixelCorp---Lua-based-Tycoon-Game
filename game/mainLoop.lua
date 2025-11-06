@@ -656,7 +656,7 @@ local function switchPage(name)
   applyStageFromProgress()
 
   if name == "stock" then
-  pcall(function() if uiAPI.showStock then uiAPI.showStock() end end); return
+  pcall(function() if uiAPI.showStock then uiAPI.buildStockPage() uiAPI.showStock()  end end); return
   elseif name == "upgrades" then
     rebuildUpgradesPage(); for _,el in ipairs(pageElements.upgrades) do if el.show then el:show() uiAPI.softRefreshStockLabels() end end; return
   elseif name == "development" then
