@@ -1,7 +1,3 @@
--- uiAPI.lua
--- Centralized UI placement & helpers for PixelCorp (Basalt)
--- This API builds the root frames (mainFrame, topBar, sidebar, displayFrame, inventory overlay),
--- owns speed buttons & pause menu, and exposes convenience helpers (spawnToast, setHUD, etc.).
 
 local M = {}
 -- --- Root resolution & deps ---
@@ -35,15 +31,13 @@ M.refs = {
   sidebar = nil,
   inventoryOverlay = nil,
   tabBar = nil,
-  loading = nil,       -- {frame,label,progressLabel,bar}
+  loading = nil,  
   speedButtons = {},
   timeThread = nil,
 }
 
-
 local DEV = { built=false, els={}, licInfo=nil, licBtn=nil, stgInfo=nil, stgBtn=nil }
 local _licBusy, _stgBusy = false, false
-
 
 -- Decide current stage and next stage definition
 local function _stageGraph()
@@ -59,7 +53,6 @@ local function _stageGraph()
   }
 end
 
-
 function M.progressToArt(progress)
   if progress == "lemonade_stand" then return "lemonade"
   elseif progress == "warehouse"   then return "office"
@@ -67,8 +60,6 @@ function M.progressToArt(progress)
   elseif progress == "highrise"    then return "tower"
   else return "base" end
 end
-
-
 
 -- --- Toast manager (re-usable, single runner) ---
 local TextToasts = { items = {}, runner = nil, root = nil, max_active = 24 }
@@ -130,7 +121,6 @@ function M.spawnToast(parent, text, x, y, color, duration)
   return lbl
 end
 
-
 local function _addDev(el) table.insert(DEV.els, el); return el end
 local function _clearDev()
   for _,el in ipairs(DEV.els) do
@@ -153,7 +143,6 @@ local function _nextLicense()
   return nil, nil
 end
 
--- Pretty helper
 local function _fmtMoney(n) return ("$%s"):format(tostring(n or 0)) end
 
 function M.refreshDevLicenses()
@@ -175,8 +164,6 @@ function M.refreshDevLicenses()
     :setText(btn)
     :setBackground(enabled and colors.blue or colors.lightGray)
     :setForeground(enabled and colors.white or colors.gray)
-
-  -- bind once; handler reads current state each click
   if not DEV._licBound then
     DEV._licBound = true
     DEV.licBtn:onClick(function()
@@ -190,8 +177,6 @@ function M.refreshDevLicenses()
       local ok, msg = licenseAPI.purchase(curId)
       M.toast("displayFrame", msg or (ok and "License purchased" or "Purchase failed"),
               18,5, ok and colors.green or colors.red,1.2)
-
-      -- update both panels
       M.refreshDevLicenses()
       M.refreshDevStage()
       pcall(function() if refreshUI then refreshUI() end end)
@@ -200,8 +185,6 @@ function M.refreshDevLicenses()
     end)
   end
 end
-
-
 
 function M.refreshDevStage()
   if not DEV.built then return end
@@ -228,13 +211,11 @@ function M.refreshDevStage()
   else
     info, btn, enabled = "Next Stage:\n  Max stage reached.", "Done", false
   end
-
   DEV.stgInfo:setText(info)
   DEV.stgBtn
     :setText(btn)
     :setBackground(enabled and colors.blue or colors.lightGray)
     :setForeground(enabled and colors.white or colors.gray)
-
   if not DEV._stgBound then
     DEV._stgBound = true
     DEV.stgBtn:onClick(function()
@@ -242,42 +223,33 @@ function M.refreshDevStage()
       local state = saveAPI.get() or {}; state.player = state.player or {}
       local g = _stageGraph(); local cur = state.player.progress or "odd_jobs"
       local def = g[cur]; if not def or not def.next then return end
-
       local needLvl = tonumber(def.req_lvl or 0) or 0
       local needLic = tostring(def.req_lic or "")
       local cost    = tonumber(def.cost or 0) or 0
       local lvlNow  = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
       local hasLic  = (needLic == "") or licenseAPI.has(needLic)
-
       if lvlNow < needLvl then return M.toast("displayFrame","Higher level required",18,5,colors.red,1.2) end
       if not hasLic then   return M.toast("displayFrame","Required license missing",18,5,colors.red,1.2) end
       if not economyAPI.canAfford(cost) then return M.toast("displayFrame","Not enough money",18,5,colors.red,1.2) end
-
       _stgBusy=true
       economyAPI.spendMoney(cost)
-      -- persist & update art immediately
       state.player.progress = def.next
       saveAPI.setState(state)
-
       local artKey = M.progressToArt(def.next)
       if M._onStageChanged then pcall(function() M._onStageChanged(def.next) end) end
-
         if stageAPI.setStage then stageAPI.setStage(artKey) end
         stageAPI.refreshBackground(M.refs.displayFrame)
-
       M.toast("displayFrame","Stage unlocked!",18,5,colors.green,1.2)
       M.refreshDevStage()
       pcall(function() if refreshUI then refreshUI() end end)
-
       _stgBusy=false
     end)
   end
 end
 
-
 function M.buildDevelopmentPage()
   if DEV.built then return end
-  local f = M.ensurePage("development")  -- uses displayFrame directly
+  local f = M.ensurePage("development") 
   _clearDev()
 
   -- stacked layout
@@ -304,23 +276,17 @@ function M.showDevelopment()
   M.showPage("development")
 end
 
--- Hard kill (alias) in case caller wants to be extra sure
 function M.killDevelopment()
   _clearDev()
 end
 
--- Force-disable any lingering dev widgets without tearing down state.
 function M.disableDevelopment()
   for _,el in ipairs(DEV.els or {}) do
     pcall(function() if el.disable then el:disable() end end)
     pcall(function() if el.hide then el:hide() end end)
   end
 end
-
-
-
-
--- ===== Stock Page (draws on displayFrame; no extra frames) =====
+-- ===== Stock Page (draws on displayFrame) =====
 local STOCK = { built=false, els={}, catIdx=1, epoch=0, qsel={}, refs={} }
 local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
 local STOCK_ORDER = { "base","fruit","sweet","topping" }
@@ -353,13 +319,13 @@ function M.buildStockPage()
 
   local f = M.refs.displayFrame
   local W, H = f:getSize()
-  local SCREEN_HEIGHT = H + 2  -- displayFrame is H-2 tall vs screen; we keep old math compatible
+  local SCREEN_HEIGHT = H + 2
 
   local catKey   = STOCK_ORDER[STOCK.catIdx] or "base"
   local catTitle = (STOCK_CATS[catKey] or catKey):upper()
 
   local ddCat = _add(f:addDropdown()
-      :setPosition(3,4)           -- same spot as the old title
+      :setPosition(3,4)          
       :setSize(12,1)
       :setZIndex(20)
       :setBackground(colors.lightBlue)
@@ -367,12 +333,10 @@ function M.buildStockPage()
       :setSelectionColor(colors.lightBlue, colors.blue)
       :hide())
 
-  -- Populate options in the same order as STOCK_ORDER
   for i, key in ipairs(STOCK_ORDER) do
     ddCat:addItem(STOCK_CATS[key] or key)
   end
 
-  -- Try to reflect the current category visually (works with various Basalt versions)
   pcall(function()
     if ddCat.setSelectedItem then ddCat:setSelectedItem(STOCK.catIdx)
     elseif ddCat.selectItem     then ddCat:selectItem(STOCK.catIdx)
@@ -380,7 +344,6 @@ function M.buildStockPage()
     end
   end)
 
-  -- When a new option is picked, update catIdx and rebuild
   ddCat:onChange(function(self, value)
     if __epoch ~= STOCK.epoch then return end
     local i = 1
@@ -389,7 +352,7 @@ function M.buildStockPage()
     elseif type(value) == "number" then
       i = value
     else
-      -- fallback: find by label text
+
       local txt = tostring(value or "")
       for k = 1, #STOCK_ORDER do
         if (STOCK_CATS[STOCK_ORDER[k]] or STOCK_ORDER[k]) == txt then i = k; break end
@@ -402,8 +365,6 @@ function M.buildStockPage()
     M.softRefreshStockLabels()
   end)
 
-  
-
   local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   local items = {}
   for _, it in ipairs(itemsAPI.listByType(catKey)) do
@@ -414,9 +375,7 @@ function M.buildStockPage()
     if ra ~= rb then return ra < rb end
     return (a.name or a.id) < (b.name or b.id)
   end)
-
   local marketStock = inventoryAPI.getAvailableStock()
-
   local row = 0
   for _, it in ipairs(items) do
     row = row + 1
@@ -426,7 +385,6 @@ function M.buildStockPage()
     local price = inventoryAPI.getMarketPrice(id)
     local amt   = marketStock[id] or 0
     local qtyToBuy = tonumber((STOCK.qsel and STOCK.qsel[id]) or 1) or 1
-
     local nameLabel = _add(f:addLabel():setText(("| %s"):format(name)):setPosition(1,y):setZIndex(10):hide())
     pcall(function() nameLabel:setForeground(_rarityColor(it)) end)
 
@@ -473,7 +431,6 @@ function M.showStock()
   end
 end
 
-
 function M.softRefreshStockLabels()
   if not STOCK.built then return end
   local marketStock = inventoryAPI.getAvailableStock()
@@ -498,9 +455,8 @@ function M.refreshStock()
     return
   end
   M.buildStockPage()
-  M.showStock()  -- ensure re-enabled after rebuild
+  M.showStock()
 end
-
 
 -- --- Loading overlay ---
 local function buildLoading(mainFrame)
@@ -575,7 +531,6 @@ function M.createBaseLayout()
       :setDirection("vertical")
       :hide()
 
-  -- Sidebar open/close helpers + close button on the LEFT edge
   local function _sidebarExpandedX() return W - (SIDEBAR_W - 1) end
   local function _sidebarHiddenX()   return W end
 
@@ -610,21 +565,14 @@ function M.createBaseLayout()
       :onClick(function() M.openSidebar() end)
   end
 
-
-
-
-
-
   sidebar:onGetFocus(function(self)
     M.openSidebar()
-      -- Close button at the far LEFT edge of the sidebar
   end)
   sidebar:onLoseFocus(function(self)
     M.closeSidebar()
-      -- Close button at the far LEFT edge of the sidebar
   end)
 
-  -- Inventory overlay shell (tabs created by caller)
+  -- Inventory overlay shell
   local inventoryOverlay = mainFrame:addMovableFrame()
       :setSize(42, 16)
       :setPosition((W - 40) / 2, 3)
@@ -640,7 +588,7 @@ function M.createBaseLayout()
       :setForeground(colors.white)
       :onClick(function() inventoryOverlay:hide() end)
 
-  -- HUD labels (user can fill/update later)
+  -- HUD labels 
   local timeLabel  = topBar:addLabel():setText("Time: --"):setPosition(2, 1)
   local moneyLabel = topBar:addLabel():setText("Money: $0"):setPosition(25, 2)
   local stageLabel = topBar:addLabel():setText("Stage: --"):setPosition(25, 1)
@@ -699,7 +647,6 @@ function M.createBaseLayout()
   updateSpeedButtonColors(speedButtons)
   M.updateSpeedButtons()
 
-  -- Pause button + menu shell (caller wires callbacks)
   local pauseBtn = topBar:addButton()
       :setText("Pause")
       :setPosition(W - 50, 2)
@@ -759,7 +706,6 @@ local pauseQuitBtn = pauseMenu:addButton()
     :onClick(function() if M._onPauseQuitToMenu then M._onPauseQuitToMenu() end end)
 
 pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen() end end)
-  -- Top bar quick access buttons
   local invBtn = topBar:addButton()
       :setText("| INV |")
       :setPosition(34, 3)
@@ -812,29 +758,22 @@ function M.showRoot()
   if M.refs.sidebar then M.refs.sidebar:show() end
 end
 
--- Convenience HUD updaters (caller may call these each tick)
 function M.setHUDTime(text)      if M.refs.labels and M.refs.labels.timeLabel then M.refs.labels.timeLabel:setText(text) end end
 function M.setHUDMoney(text)     if M.refs.labels and M.refs.labels.moneyLabel then M.refs.labels.moneyLabel:setText(text) end end
 function M.setHUDStage(text)     if M.refs.labels and M.refs.labels.stageLabel then M.refs.labels.stageLabel:setText(text) end end
 function M.setHUDLevel(text)     if M.refs.labels and M.refs.labels.levelLabel then M.refs.labels.levelLabel:setText(text) end end
 function M.setHUDLevelBar(text)  if M.refs.labels and M.refs.labels.levelBarLabel then M.refs.labels.levelBarLabel:setText(text) end end
 
--- Background helper
-
--- Frame accessors / toast routing
 function M.getFrame(name)
   if not name then return M.refs.mainFrame end
   if M.refs.frames and M.refs.frames[name] then return M.refs.frames[name] end
   return M.refs.mainFrame
 end
 
--- route to topbar by default when target is pause to avoid covering menu content
 function M.toast(where, text, x, y, color, duration)
-  -- If you pass a Basalt frame, use it directly.
   if type(where) == "table" and where.addLabel then
     return M.spawnToast(where, text, x, y, color, duration)
   end
-  -- Otherwise treat it as a named area ("topbar", "displayFrame", "pause", etc.)
   local target = M.getFrame(where)
   if where == "pause" then target = M.refs.topBar or target end
   return M.spawnToast(target, text, x, y, color, duration)
@@ -843,8 +782,6 @@ end
 function M.refreshStageBackground()
     stageAPI.refreshBackground(M.refs.displayFrame)
 end
-
-
 
 function M.onPauseResume(fn) M._onPauseResume = fn end
 function M.onPauseOpen(fn) M._onPauseOpen = fn end
@@ -857,27 +794,22 @@ function M.onStageChanged(fn) M._onStageChanged = fn end
 function M.onTopInv(fn) M._onTopInv = fn end
 function M.onTopCraft(fn) M._onTopCraft = fn end
 
--- Lightweight page manager (groups children into named frames)
 local _pages = _pages or {}
-
--- Pages that should NOT create a container (paint directly on displayFrame)
 local NO_CONTAINER = { development = true, stock = true, main = true, upgrades = true } 
 
 function M.ensurePage(name)
   if not name or name == "" then return M.refs.displayFrame end
   if NO_CONTAINER[name] then
-    -- Draw directly on the stage-backed displayFrame
     return M.refs.displayFrame
   end
 
-  -- For normal pages, create (or reuse) an isolated container
   if _pages[name] and _pages[name].frame then return _pages[name].frame end
 
   local W, H = term.getSize()
   local f = M.refs.displayFrame:addFrame()
       :setSize(W, H - 2)
-      :setPosition(1, 1)    -- matches your content coordinates
-      :setZIndex(10)        -- above stage bg, below overlays
+      :setPosition(1, 1)
+      :setZIndex(10)
       :hide()
 
       stageAPI.refreshBackground(f)
@@ -887,18 +819,16 @@ function M.ensurePage(name)
 end
 
 function M.showPage(name)
-  if NO_CONTAINER[name] then return end      -- never show/hide displayFrame
+  if NO_CONTAINER[name] then return end
   local p = _pages[name]; if p and p.frame then p.frame:show() end
 end
 
 function M.hidePage(name)
-  if NO_CONTAINER[name] then return end      -- never show/hide displayFrame
+  if NO_CONTAINER[name] then return end
   local p = _pages[name]; if p and p.frame then p.frame:hide() end
 end
 
 function M.teardownPage(name)
-  -- For isolated pages, clear their container; for background pages,
-  -- caller should remove its own widgets as usual.
   local p = _pages[name]
   if p and p.frame then pcall(function() p.frame:removeChildren() end); p.built = false end
 end
@@ -930,14 +860,10 @@ function M.openFinanceModal()
   }
   function show(k) for n,f in pairs(pages) do if f.hide then f:hide() end end; pages[k]:show() end
   tabs:onChange(function(self, idx) local i=self.getItemIndex and self:getItemIndex() or 1; show((i==1) and "loans" or "stocks") end)
-
-  -- Close button
   border:addButton():setText(" X "):setPosition(43,1):setSize(3,1):setBackground(colors.red):setForeground(colors.white):onClick(function() border:hide(); border:remove() end)
-
   -- Loans tab content
   local loansF = pages.loans
   loansF:addLabel():setText("Available Loans (7-day term, 20% simple):"):setPosition(1,1):setForeground(colors.black)
-
   -- Determine unlocks
   local Lvl = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   local stageUnlocked = (stageAPI and stageAPI.isUnlocked and stageAPI.isUnlocked("lemonade")) or true
@@ -950,33 +876,9 @@ function M.openFinanceModal()
   }
 
   local y=2
-  -- Track buttons per loan id, and helpers to compute state
   local loanBtnById = {}
 
-
-  local function anyActiveLoans()
-    if economyAPI and economyAPI.listLoans then
-      for _,L in ipairs(economyAPI.listLoans()) do
-        if (L.remaining_principal or 0) > 0 then return true end
-      end
-    end
-    return false
-  end
-
-  local function _activeLoanIds()
-    local ids = {}
-    local list = {}
-    if economyAPI and economyAPI.listLoans then list = economyAPI.listLoans() end
-    for _, L in ipairs(list) do
-      if (L.remaining_principal or 0) > 0 and L.id then
-        ids[tostring(L.id)] = true
-      end
-    end
-    return ids
-  end
-
   function refreshLoanButtons()
-    -- Build a quick map of active loans (remaining_principal > 0)
     local activeById = {}
     local list = {}
     if economyAPI and economyAPI.listLoans then list = economyAPI.listLoans() end
@@ -986,14 +888,12 @@ function M.openFinanceModal()
       end
     end
 
-    -- Fixed layout: row at y = 2 + (idx-1)*2
     for idx, d in ipairs(defs) do
       local yRow = 2 + (idx - 1) * 2 + 1
       loanPosById[d.id] = yRow
 
       local unlocked = d.requiresStage and (Lvl >= d.unlockLevel)
 
-      -- Create the button once, then reuse
       local btn = loanBtnById[d.id]
       if not btn then
         btn = loansF:addButton()
@@ -1012,8 +912,6 @@ function M.openFinanceModal()
           refreshLoanButtons()
         end)
       end
-
-      -- Position and style (deterministic; no 'y = y + 2' increments)
       btn:setPosition(2, yRow):setSize(32, 1)
 
       local isThisActive = (activeById[d.id] ~= nil)
@@ -1029,12 +927,10 @@ function M.openFinanceModal()
       end
     end
 
-    -- Clear any old per-loan detail widgets
     for _, lbl in pairs(loanInfoById)  do if lbl and lbl.remove then pcall(function() lbl:remove() end) end end
     for _, pb  in pairs(payoffBtnById) do if pb  and pb.remove  then pcall(function() pb:remove()  end) end end
     loanInfoById, payoffBtnById = {}, {}
 
-    -- Helper for daily charge with cents
     local function dailyCharge(L)
       local dp = tonumber(L.dailyPrincipal or L.baseDaily or 0) or 0
       if dp <= 0 then
@@ -1045,8 +941,6 @@ function M.openFinanceModal()
       local r = tonumber(L.interest or 0) or 0
       return math.floor((dp * (1 + r)) * 100 + 0.5) / 100
     end
-
-    -- Draw details UNDER each active loan's button; payoff to the RIGHT of that row
     for id, L in pairs(activeById) do
       local yRow = (loanPosById[id] or 2) + 1
       loanInfoById[id] = loansF:addLabel()
@@ -1054,7 +948,6 @@ function M.openFinanceModal()
           :format(dailyCharge(L), tonumber(L.remaining_principal or 0) or 0, L.days_paid or 0, L.days_total or 7))
         :setPosition(2, yRow)
         :setForeground(colors.black)
-
       payoffBtnById[id] = loansF:addButton()
         :setText("Pay Off")
         :setPosition(35, yRow-1)
@@ -1085,7 +978,7 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
     local graphFrame = stocksF:addFrame():setPosition(17,1):setSize(21,7):setBackground(colors.white)
     local ctlFrame   = stocksF:addFrame():setPosition(17,8):setSize(21,4):setBackground(colors.white)
 
-    local tickers = economyAPI.getStocks()   -- { {sym, name, price, min, max}, ... }
+    local tickers = economyAPI.getStocks() 
     local selected = 1
 
     -- left list of tickers (buttons)
@@ -1109,7 +1002,7 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
       end
     end
 
-  -- simple 21x8 dot chart of last 21 points scaled into 8 rows
+  -- simple 21x8 dot chart of last 21 points scaled into 7 rows
     local chartDots = {}
     local function clearChart()
       for _,lbl in ipairs(chartDots) do if lbl and lbl.remove then pcall(function() lbl:remove() end) end end
@@ -1126,8 +1019,6 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
       local view = {}
       for i=start, n do table.insert(view, hist[i]) end
       if #view == 0 then return end
-
-      -- normalize to 8 rows (y: 0..7 -> screen rows top-down)
       local vmin, vmax = view[1], view[1]
       for _,v in ipairs(view) do if v < vmin then vmin = v end; if v > vmax then vmax = v end end
       local span = math.max(0.01, vmax - vmin)
@@ -1138,16 +1029,14 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
         local y = 1 + (6 - math.floor(t*7 + 0.5))   -- 1..8
         chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(x, y):setText("*")
       end
-
-      -- axes/legend
       local minLbl = string.format("$%.0f", vmin)
       local maxLbl = string.format("$%.0f", vmax)
       chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(1, 7):setText(minLbl):setForeground(colors.gray)
       chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(1, 1):setText(maxLbl):setForeground(colors.gray)
     end
-
-  -- controls: qty picker + Buy / Sell + Buy Max / Sell All + holding info
     local qtyDD, buyBtn, sellBtn, maxBtn, allBtn, holdLbl, priceLbl
+    local qty = qty or 1
+    local qtyLbl = ctlFrame:addLabel():setPosition(5,2):setText(tostring(qty)):setForeground(colors.black)
     function M.renderControls()
       for _,c in ipairs({qtyDD,buyBtn,sellBtn,maxBtn,allBtn,holdLbl,priceLbl}) do
         if c and c.remove then pcall(function() c:remove() end) end
@@ -1161,13 +1050,11 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
       holdLbl = ctlFrame:addLabel():setPosition(13,1)
         :setText(string.format("Hold: %d", snap.qty or 0)):setForeground(colors.gray)
 
-      local qty = 1
-       local qtyLbl = ctlFrame:addLabel():setPosition(5,2):setText(tostring(qty)):setForeground(colors.black)
-      local function clamp(n) if n < 1 then return 1 elseif n > 9999 then return 9999 else return n end end
-      local function setQty(n) qty = clamp(n); if qtyLbl and qtyLbl.setText then qtyLbl:setText(string.format("%d", qty)) end end
 
 
-      -- (Optional) fast adjust with +5/-5; comment these two out if you don't want them
+      local function clamp(n) if n > 1 then return n else n = 1  end return n end
+      local function setQty(n) qty = clamp(n); if qtyLbl and qtyLbl.setText then qtyLbl:setText(string.format("%d", qty)):setPosition(5,2) end end
+
       ctlFrame:addButton():setText("<<"):setPosition(2,2):setSize(2,1)
         :setBackground(colors.lightGray):setForeground(colors.black)
         :onClick(function() setQty(qty - 1) end)
