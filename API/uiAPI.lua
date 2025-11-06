@@ -384,7 +384,7 @@ function M.buildStockPage()
     local name  = it.name or id
     local price = inventoryAPI.getMarketPrice(id)
     local amt   = marketStock[id] or 0
-    local qtyToBuy = tonumber((STOCK.qsel and STOCK.qsel[id]) or 1) or 1
+    local qtyToBuy =  1
     local nameLabel = _add(f:addLabel():setText(("| %s"):format(name)):setPosition(1,y):setZIndex(10):hide())
     pcall(function() nameLabel:setForeground(_rarityColor(it)) end)
 
