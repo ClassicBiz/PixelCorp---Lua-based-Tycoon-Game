@@ -13,7 +13,6 @@ end
 local root = getRoot()
 local saveAPI = require(root.."/API/saveAPI")
 
--- Weekly-fluctuating ranges for BASE MATERIALS only
 local PRICES = {
   lemons = { min = 2, max = 4 },
   sugar  = { min = 1, max = 3 },
@@ -21,12 +20,10 @@ local PRICES = {
   ice    = { min = 1, max = 2 }
 }
 
--- Local cache for ad-hoc product prices (session only; persistence lives in saveAPI)
 local productPrices = {}
 
--- --- Weekly material price table generation ---
 local function reseedPrices()
-  local seed = math.floor(os.epoch("utc") / (1000 * 60 * 60 * 24 * 7)) -- change weekly
+  local seed = math.floor(os.epoch("utc") / (1000 * 60 * 60 * 24 * 7))
   math.randomseed(seed)
   local p = {}
   for item, range in pairs(PRICES) do
@@ -42,8 +39,6 @@ local function ensurePriceTable()
   saveAPI.setState(s)
   return s.meta.prices
 end
-
--- --- Public API ---
 
 local function round2(x) x = tonumber(x) or 0; return math.floor(x*100 + 0.5)/100 end
 local function ceil2(x)  x = tonumber(x) or 0; return math.ceil(x*100)/100 end
@@ -73,7 +68,6 @@ function economyAPI.reseedWeekly()
   saveAPI.setState(s)
 end
 
--- Money helpers
 function economyAPI.getMoney()
   return saveAPI.getPlayerMoney()
 end
@@ -104,8 +98,6 @@ local function _ensureFinance()
   local s = saveAPI.get()
   s.finance = s.finance or {}
   s.finance.loans = s.finance.loans or { active = {} }
-
-  -- normalize to a single active loan (keep most recent unpaid if multiple exist)
   local act = s.finance.loans.active or {}
   local keep
   for i = #act, 1, -1 do
@@ -117,11 +109,6 @@ local function _ensureFinance()
 
   saveAPI.setState(s)
   return s.finance.loans
-end
-
-local function _today()
-  local s = saveAPI.get(); local t = s.time or {year=1,month=1,day=1}
-  return { year=t.year, month=t.month, day=t.day }
 end
 
 -- Create loan
@@ -249,13 +236,11 @@ local function _ensureStocks()
   s.finance.stocks = s.finance.stocks or { defs = nil, last = {}, hist = {}, holdings = {}, state = {}, seeded = false }
   local M = s.finance.stocks
 
-  -- one-time RNG seed
   if not M.seeded then
     math.randomseed((os.epoch and os.epoch("utc") or os.clock()*1000) % 2^31)
     M.seeded = true
   end
 
-  -- define tickers once
   if not M.defs then
     M.defs = {
       { sym="SHQ", name="SharkQ",   min=20,  max=400  },
@@ -264,33 +249,24 @@ local function _ensureStocks()
       { sym="ATC", name="Aetica",   min=200, max=3000 },
     }
   end
-
-  -- ensure per-symbol structures always exist (even across updates)
   M.last     = M.last     or {}
   M.hist     = M.hist     or {}
   M.holdings = M.holdings or {}
   M.state    = M.state    or {}
-
   for _, d in ipairs(M.defs) do
     local sym = d.sym
     local mid = (d.min + d.max) * 0.5
-
-    -- start a little off the dead center so the first chart isn’t flat
     if M.last[sym] == nil then
       local jitter = (math.random() - 0.5) * (d.max - d.min) * 0.02  -- ~±2% of range
       M.last[sym] = mid + jitter
     end
-
     if M.hist[sym] == nil then
       M.hist[sym] = {}
       for i = 1, 30 do table.insert(M.hist[sym], M.last[sym]) end
     end
-
     if M.holdings[sym] == nil then
       M.holdings[sym] = 0
     end
-
-    -- NEW: per-symbol simulation state (trend / volatility / shock)
     if M.state[sym] == nil then
       M.state[sym] = {
         trend = 0.0,   -- persistent drift per step
@@ -307,82 +283,84 @@ end
 function economyAPI.stepStocks()
   local M = _ensureStocks()
 
-  -- Tunables (feel free to tweak)
-  local TREND_PERSIST   = 0.90   -- how much of last trend carries forward
-  local TREND_NUDGE     = 0.06   -- random nudge applied to trend each step (scaled by range)
-  local VOL_MEANREV     = 0.95   -- vol moves toward 1.0
-  local VOL_JITTER      = 0.08   -- random vol perturbation
-  local BASE_NOISE_PCT  = 0.007  -- baseline noise as % of (max-min) per step
-  local STEP_CAP_PCT    = 0.06   -- cap total one-step move as % of (max-min)
-  local EPS_PCT         = 0.02   -- keep at least 2% away from hard min/max
-  local SHOCK_PROB      = 0.03   -- 3% chance per step of a shock event
-  local SHOCK_MAG_PCT   = 0.10   -- shock size up to 10% of range
-  local SHOCK_DECAY     = 0.80   -- shock decays by 20% each step
+  -- Regime + randomness tunables
+  local BASE_NOISE_PCT  = 0.010  -- baseline noise (↑ from 0.007)
+  local STEP_CAP_PCT    = 0.08   -- max move per step (↑ from 0.06)
+  local EPS_PCT         = 0.02   -- soft distance from min/max
+  local SHOCK_PROB      = 0.04   -- shock chance (↑ from 0.03)
+  local SHOCK_MAG_PCT   = 0.12   -- shock size (↑ from 0.10)
+  local SHOCK_DECAY     = 0.78   -- shock decay
+
+  -- Two regimes: 0=calm, 1=storm. Storm has higher vol + looser trend persistence.
+  local REGIME_P        = { calm = 0, storm = 1 }
+  local REGIME_PERSIST  = { [0]=0.95, [1]=0.88 }  -- trend persistence by regime
+  local REGIME_VOLJIT   = { [0]=0.06, [1]=0.12 }  -- vol jitter by regime
+  local REGIME_NOISE    = { [0]=1.0,  [1]=1.8  }  -- noise multiple by regime
+  local REGIME_SWITCH_P = { toStorm=0.06, toCalm=0.08 } -- Markov switch per step
 
   for _, d in ipairs(M.defs) do
     local sym, minP, maxP = d.sym, d.min, d.max
-    local range = (maxP - minP)
+    local range = (maxP - minP); if range <= 0 then range = 1 end
     local mid   = (minP + maxP) * 0.5
     local eps   = range * EPS_PCT
 
     local p0    = tonumber(M.last[sym] or mid) or mid
-    local S     = (M.state and M.state[sym]) or { trend=0.0, vol=1.0, shock=0.0 }
-    M.state     = M.state or {}
-    M.state[sym]= S
+    local S     = M.state[sym]
+    S.regime = (S.regime ~= nil) and S.regime or REGIME_P.calm
+    S.flipAge = (S.flipAge or 0) + 1
 
-    -- 1) persistent trend (AR(1) w/ small random nudge)
-    local nudge = (math.random() - 0.5) * (range * TREND_NUDGE)
-    S.trend = TREND_PERSIST * S.trend + nudge
-
-    -- bias trend slightly by distance from mid so we can get prolonged runs,
-    -- but still not anchor too hard to the midpoint
-    local bias = (p0 - mid) / range      -- -0.5..+0.5 roughly
-    S.trend = S.trend - bias * (range * 0.01)  -- gentle tug back
-
-    -- 2) volatility regime (vol wanders around 1.0)
-    S.vol = VOL_MEANREV * S.vol + (1 - VOL_MEANREV) * 1.0
-    S.vol = S.vol + (math.random() - 0.5) * VOL_JITTER
-    if S.vol < 0.5 then S.vol = 0.5 end
-    if S.vol > 2.0 then S.vol = 2.0 end
-
-    -- 3) rare shock (positive or negative), then decays
-    if math.random() < SHOCK_PROB and math.abs(S.shock) < range * 0.02 then
-      local dir = (math.random() < 0.5) and -1 or 1
-      S.shock = dir * (range * (math.random() * SHOCK_MAG_PCT))
+    if S.regime == REGIME_P.calm then
+      if math.random() < REGIME_SWITCH_P.toStorm then S.regime = REGIME_P.storm end
     else
-      S.shock = S.shock * SHOCK_DECAY
+      if math.random() < REGIME_SWITCH_P.toCalm then S.regime = REGIME_P.calm end
+    end
+
+    local TREND_PERSIST = REGIME_PERSIST[S.regime]
+    local TREND_NUDGE   = 0.08                              -- ↑ from 0.06
+    local nudge         = (math.random() - 0.5) * (range * TREND_NUDGE)
+
+    local bias = (p0 - mid) / range
+    S.trend = TREND_PERSIST * (S.trend or 0) + nudge - bias * (range * 0.008)
+
+    local baseFlipP = 0.015
+    local hazard    = math.min(0.20, baseFlipP * (1 + S.flipAge / 8))  -- caps at 20%
+    if math.random() < hazard then
+      S.trend = -S.trend * (0.7 + math.random() * 0.5) -- flip & damp a bit
+      S.flipAge = 0
+    end
+    local VOL_MEANREV = 0.94
+    local VOL_JITTER  = REGIME_VOLJIT[S.regime]
+    S.vol = VOL_MEANREV * (S.vol or 1.0) + (1 - VOL_MEANREV) * 1.0
+    S.vol = S.vol + (math.random() - 0.5) * VOL_JITTER
+    if S.vol < 0.5 then S.vol = 0.5 elseif S.vol > 2.2 then S.vol = 2.2 end
+    if math.random() < SHOCK_PROB and math.abs(S.shock or 0) < range * 0.025 then
+      local dir = (math.random() < 0.5) and -1 or 1
+      S.shock = dir * (range * (0.5 + math.random()*0.5) * SHOCK_MAG_PCT) -- 50–100% of MAG
+    else
+      S.shock = (S.shock or 0) * SHOCK_DECAY
       if math.abs(S.shock) < 0.001 then S.shock = 0.0 end
     end
-
-    -- 4) base noise scaled by vol
-    local baseNoise = (math.random() - 0.5) * (range * BASE_NOISE_PCT) * S.vol
-
-    -- Proposed move
+    local noiseMul = REGIME_NOISE[S.regime]
+    local baseNoise = (math.random() - 0.5) * (range * BASE_NOISE_PCT) * S.vol * noiseMul
     local delta = S.trend + baseNoise + S.shock
-
-    -- Cap total one-step move
-    local cap = range * STEP_CAP_PCT
+    local cap   = range * STEP_CAP_PCT
     if delta >  cap then delta =  cap end
     if delta < -cap then delta = -cap end
-
     local p1 = p0 + delta
-
-    -- 5) soft bounds + bounce the trend if we get close to edges
     if p1 < (minP + eps) then
       p1 = minP + eps
-      S.trend = math.abs(S.trend)        -- bounce upward
+      S.trend = math.abs(S.trend or 0) * (0.6 + math.random()*0.5)
       S.shock = 0.0
+      S.flipAge = 0
     elseif p1 > (maxP - eps) then
       p1 = maxP - eps
-      S.trend = -math.abs(S.trend)       -- bounce downward
+      S.trend = -math.abs(S.trend or 0) * (0.6 + math.random()*0.5)
       S.shock = 0.0
+      S.flipAge = 0
     end
-
-    -- write back
     M.last[sym] = p1
-    local H = M.hist[sym]; table.insert(H, p1); if #H > 60 then table.remove(H, 1) end  -- keep 60 pts now
+    local H = M.hist[sym]; table.insert(H, p1); if #H > 60 then table.remove(H, 1) end
   end
-
   saveAPI.save()
 end
 
