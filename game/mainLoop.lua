@@ -591,9 +591,9 @@ local function buildUpgradeRow(key, y)
     :onClick(function()
       local cBuy, whyNow = canBuy, why; if upgradeAPI.canPurchase then cBuy, whyNow = upgradeAPI.canPurchase(key) end
       local okEnabled = (state~="locked") and not (oneTime and ownedOT) and not (not oneTime and atCap) and _canAfford(cost) and cBuy
-      if not okEnabled then uiAPI.toast("displayFrame", whyNow or "Locked", 17,3, colors.red,1.0); return end
+      if not okEnabled then uiAPI.toast("displayFrame", whyNow or "Locked", 17,4, colors.red,1.0); return end
       local ok, msg = upgradeAPI.purchase(key, function(c) return economyAPI.spendMoney(c) end)
-      uiAPI.toast("displayFrame", msg or (ok and "Purchased!" or "Purchase failed"), 16,3, ok and colors.cyan or colors.red, 1.0)
+      uiAPI.toast("displayFrame", msg or (ok and "Purchased!" or "Purchase failed"), 16,4, ok and colors.cyan or colors.red, 1.0)
       buildUpgradeRow(key, y); if currentPage=="upgrades" then for _,el in ipairs(upgradeRowRefs[key] or {}) do if el.show then el:show() end end end
     end)
 
@@ -621,14 +621,11 @@ end
 -- ==============
 local function buildMainPage()
   _clearGroup("main")
+
   local title = displayFrame:addLabel():setText("---------------| Main Screen |---------------"):setPosition(2,2):setZIndex(10):hide()
   local guideBtn = displayFrame:addButton():setText("[??]"):setPosition(2,3):setSize(4,1):setBackground(colors.blue):setForeground(colors.black):hide()
     :onClick(function()
-      local ok = false
-      if guideAPI and guideAPI.show then ok = pcall(function() guideAPI.show() end) end
-      if (not ok) and guideAPI and guideAPI.toggle then ok = pcall(function() guideAPI.toggle(true) end) end
-      if (not ok) and uiAPI and uiAPI.openGuide then ok = pcall(function() uiAPI.openGuide() end) end
-      if not ok then uiAPI.toast("displayFrame","Guide not available", 8,5, colors.red,1.5) end
+       guideAPI.show()
     end)
   table.insert(pageElements.main, title); table.insert(pageElements.main, guideBtn)
 end
@@ -728,6 +725,26 @@ uiAPI.onPauseQuitToMenu(function()
   saveAPI.save(); basalt.stop()
   local ok, err = pcall(function() shell.run(fs.combine(root, "PixelCorp.lua")) end)
   if not ok and err then print(err) end
+end)
+
+
+-- ================
+-- Skip Night wiring (20:00 → 05:30)
+-- ================
+uiAPI.onSkipNight(function()
+  local t = timeAPI.getTime()
+  local h, m = t.hour or 0, t.minute or 0
+  local allowed = (h >= 20) or (h < 5) or (h == 5 and m < 30)
+  if not allowed then
+    uiAPI.toast("displayFrame", "Skip available 20:00→05:30", 10,4, colors.gray, 1.6)
+    return
+  end
+  local prev = timeAPI.getSpeed()
+  timeAPI.setSpeed("pause"); uiAPI.updateSpeedButtons()
+  local ok = timeAPI.skipNight()
+  timeAPI.setSpeed(prev or "normal"); uiAPI.updateSpeedButtons()
+  refreshUI()
+  if ok then uiAPI.toast("displayFrame", "New day!", 12,4, colors.cyan, 1.6) end
 end)
 
 -- =====================
