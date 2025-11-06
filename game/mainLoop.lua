@@ -796,37 +796,59 @@ function refreshUI()
 
   -- Daily market refresh & page repaint if needed (6:00)
   local s = saveAPI.get(); local day, hour, minute = s.time.day, s.time.hour, s.time.minute
-if hour == 6 then
-  if not _didDailyStockRefresh then
-    _didDailyStockRefresh = true
-    -- 1) Trigger backend market recompute if available (safely no-op if not present)
-    if inventoryAPI then
-      pcall(function() if inventoryAPI.rollDailyMarket then inventoryAPI.rollDailyMarket() end end)
-      pcall(function() if inventoryAPI.refreshMarket then inventoryAPI.refreshMarket() end end)
-      pcall(function() if inventoryAPI.reseedDailyStock then inventoryAPI.reseedDailyStock() end end)
+  if hour == 6 then
+    if not _didDailyStockRefresh then
+      _didDailyStockRefresh = true
+      -- 1) Trigger backend market recompute if available (safely no-op if not present)
+      if inventoryAPI then
+        pcall(function() if inventoryAPI.rollDailyMarket then inventoryAPI.rollDailyMarket() end end)
+        pcall(function() if inventoryAPI.refreshMarket then inventoryAPI.refreshMarket() end end)
+        pcall(function() if inventoryAPI.reseedDailyStock then inventoryAPI.reseedDailyStock() end end)
+      end
+      -- 2) Soft refresh labels immediately so visible numbers update
+      if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
+      -- 3) Do a second soft refresh shortly after in case backend rolls async
+      uiAPI.softRefreshStockLabels()
+      if uiAPI and uiAPI.runLater then
+        uiAPI.runLater(1.0, function()
+          if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
+        end)
+      end
     end
-    -- 2) Soft refresh labels immediately so visible numbers update
-    if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
-    -- 3) Do a second soft refresh shortly after in case backend rolls async
-    uiAPI.softRefreshStockLabels()
-    if uiAPI and uiAPI.runLater then
-      uiAPI.runLater(1.0, function()
-        if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
-      end)
-    end
+  else
+    _didDailyStockRefresh = false
   end
-else
-  _didDailyStockRefresh = false
-end
   if hour == 7 then
-  if not _didDailyLoanCharge then
-    _didDailyLoanCharge = true
-    pcall(function() if economyAPI and economyAPI.processDailyLoans then economyAPI.processDailyLoans() end end)
-    pcall(function() if economyAPI and economyAPI.cleanupLoans then economyAPI.cleanupLoans() end end)
+    if not _didDailyLoanCharge then
+      _didDailyLoanCharge = true
+      pcall(function() if economyAPI and economyAPI.processDailyLoans then economyAPI.processDailyLoans() end end)
+      pcall(function() if economyAPI and economyAPI.cleanupLoans then economyAPI.cleanupLoans() end end)
+    end
+  else
+    _didDailyLoanCharge = false
   end
-else
-  _didDailyLoanCharge = false
-end
+
+  do
+    local t = timeAPI.getTime()
+    local hour = t.hour
+
+    -- remember last hour we stepped on (persist outside 'do' via upvalue)
+    _lastStockHour = _lastStockHour or hour
+
+    if hour ~= _lastStockHour then
+      -- Optional: if you might skip multiple hours at once, you can loop here.
+      -- For now, we just step once per observed change.
+      pcall(function()
+        if economyAPI and economyAPI.stepStocks then
+          economyAPI.stepStocks()
+          uiAPI.renderList()
+          uiAPI.renderChart()
+          uiAPI.renderControls()
+        end
+      end)
+      _lastStockHour = hour
+    end
+  end
 
   -- Money/Stage HUD
   local state = saveAPI.get()
