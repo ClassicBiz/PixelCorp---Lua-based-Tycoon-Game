@@ -590,9 +590,9 @@ function M.createBaseLayout()
 
   -- HUD labels 
   local timeLabel  = topBar:addLabel():setText("Time: --"):setPosition(2, 1)
-  local moneyLabel = topBar:addLabel():setText("Money: $0"):setPosition(25, 2)
+  local moneyLabel = topBar:addLabel():setText("Money: $0"):setPosition(32, 2)
   local stageLabel = topBar:addLabel():setText("Stage: --"):setPosition(25, 1)
-  local moneyPlus = topBar:addButton():setText("+"):setPosition(24,2):setSize(1,1):setBackground(colors.gray):setForeground(colors.green)
+  local moneyPlus = topBar:addButton():setText("Bank"):setPosition(27,2):setSize(4,1):setBackground(colors.gray):setForeground(colors.green)
   :onClick(function()
     if M.openFinanceModal then M.openFinanceModal() end
     if M._onMoneyPlus then pcall(M._onMoneyPlus) end
@@ -632,8 +632,10 @@ function M.createBaseLayout()
         btn:setBackground(colors.lightGray):setForeground(colors.gray)
       end
     end
+
   end
 
+  
   local speedButtons = {}
   speedButtons["pause"] = topBar:addButton():setText("II"):setPosition(W - 44, 2):setSize(4,1)
       :onClick(function() timeAPI.setSpeed("pause"); updateSpeedButtonColors(speedButtons) end)
@@ -641,11 +643,60 @@ function M.createBaseLayout()
       :onClick(function() timeAPI.setSpeed("normal"); updateSpeedButtonColors(speedButtons) end)
   speedButtons["2x"] = topBar:addButton():setText(">>"):setPosition(W - 36, 2):setSize(4,1)
       :onClick(function() timeAPI.setSpeed("2x"); updateSpeedButtonColors(speedButtons) end)
-  speedButtons["4x"] = topBar:addButton():setText(">>>"):setPosition(W - 32, 2):setSize(4,1)
-      :onClick(function() timeAPI.setSpeed("4x"); updateSpeedButtonColors(speedButtons) end)
+
+  -- A single button that is either ">>>" (4x) or "Skip" depending on time.
+  local rightBtn = topBar:addButton():setPosition(W - 32, 2):setSize(4,1)
+
+  local function inSkipWindow()
+    local t = timeAPI.getTime()
+    local h, m = t.hour or 0, t.minute or 0
+    return (h >= 20) or (h < 5) or (h == 5 and m < 30)
+  end
+
+  local function refreshRightBtn()
+    if inSkipWindow() then
+      speedButtons["skip"] = rightBtn
+      speedButtons["4x"] = nil
+      rightBtn:setText("Skip")
+      rightBtn:onClick(function()
+        if M._onSkipNight then M._onSkipNight() end
+      end)
+    else
+      speedButtons["4x"] = rightBtn
+      speedButtons["skip"] = nil
+      rightBtn:setText(">>>")
+      rightBtn:onClick(function()
+        timeAPI.setSpeed("4x"); updateSpeedButtonColors(speedButtons)
+      end)
+    end
+  end
+
+  function M._refreshSkipOr4x()
+    refreshRightBtn()
+  end
+
+  local function updateSpeedButtonColors(speedButtons)
+    refreshRightBtn()
+    local current = timeAPI.getSpeed()
+    for mode, btn in pairs(speedButtons) do
+      if mode == current then
+        if mode == "pause" then btn:setBackground(colors.red)
+        elseif mode == "normal" then btn:setBackground(colors.green)
+        elseif mode == "2x" then btn:setBackground(colors.blue)
+        elseif mode == "4x" then btn:setBackground(colors.orange)
+        elseif mode == "skip" then btn:setBackground(colors.purple or colors.blue)
+        end
+        btn:setForeground(colors.white)
+      else
+        btn:setBackground(colors.lightGray):setForeground(colors.gray)
+      end
+    end
+  end
 
   updateSpeedButtonColors(speedButtons)
-  M.updateSpeedButtons()
+  M.updateSpeedButtons = function()
+    updateSpeedButtonColors(speedButtons)
+  end
 
   local pauseBtn = topBar:addButton()
       :setText("Pause")
@@ -789,6 +840,7 @@ function M.onPauseSave(fn) M._onPauseSave = fn end
 function M.onPauseLoad(fn) M._onPauseLoad = fn end
 function M.onPauseSettings(fn) M._onPauseSettings = fn end
 function M.onPauseQuitToMenu(fn) M._onPauseQuitToMenu = fn end
+function M.onSkipNight(fn) M._onSkipNight = fn end
 function M.onStageChanged(fn) M._onStageChanged = fn end
 
 function M.onTopInv(fn) M._onTopInv = fn end
