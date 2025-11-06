@@ -146,4 +146,64 @@ if saveAPI and saveAPI.onLoad then
     end)
 end
 
+
+
+-- ====================
+-- Public API: Fast-forward / Skip
+-- ====================
+
+-- Advance by N minutes, notifying listeners each minute (no sleeps).
+function timeAPI.fastForwardMinutes(n)
+    n = tonumber(n) or 0
+    if n <= 0 then return end
+    for _ = 1, n do
+        -- advanceMinute is local above; reuse via upvalue
+        local ok, err = pcall(function() advanceMinute() end)
+        if not ok then break end
+    end
+    if timeAPI.bindToSave then timeAPI.bindToSave() end
+end
+
+-- Fast-forward to a specific time of day (hh:mm).
+-- If nextDay is true and the target is <= current time, we roll to the next day first.
+function timeAPI.fastForwardTo(hh, mm, nextDay)
+    hh = tonumber(hh) or 0
+    mm = tonumber(mm) or 0
+    if hh < 0 then hh = 0 end
+    if hh > 23 then hh = 23 end
+    if mm < 0 then mm = 0 end
+    if mm > 59 then mm = 59 end
+
+    local t = timeAPI.time
+    if nextDay and (t.hour > hh or (t.hour == hh and t.minute >= mm)) then
+        local minsToMid = (60 - t.minute) + (23 - t.hour) * 60
+        if minsToMid > 0 then timeAPI.fastForwardMinutes(minsToMid) end
+    end
+
+    local cur = timeAPI.time
+    local delta = (hh - cur.hour) * 60 + (mm - cur.minute)
+    if delta < 0 then delta = 0 end
+    if delta > 0 then timeAPI.fastForwardMinutes(delta) end
+end
+
+-- Skip the downtime night window to 05:30.
+-- Rules:
+--   - If it's >= 20:00 (8pm), jump to 05:30 the next day.
+--   - If it's < 05:30, jump to 05:30 today.
+--   - Otherwise return false (no action).
+function timeAPI.skipNight()
+    local t = timeAPI.time or {hour=0, minute=0}
+    local h = tonumber(t.hour or 0) or 0
+    local m = tonumber(t.minute or 0) or 0
+    if h >= 20 then
+        timeAPI.fastForwardTo(5, 30, true)
+        return true
+    elseif (h < 5) or (h == 5 and m < 30) then
+        timeAPI.fastForwardTo(5, 30, false)
+        return true
+    end
+    return false
+end
+
+
 return timeAPI
