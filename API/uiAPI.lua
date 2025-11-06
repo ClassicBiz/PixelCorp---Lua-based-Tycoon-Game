@@ -1073,12 +1073,146 @@ function M.openFinanceModal()
   refreshLoanButtons()
 
   -- Stocks tab content
-  local stocksF = pages.stocks
-  local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
-  if L < 3 then
-    stocksF:addLabel():setText("Level 3 required to unlock stocks"):setPosition(2,2):setForeground(colors.gray)
+local stocksF = pages.stocks
+local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
+  if L < 15 then
+    stocksF:addLabel():setText("Level 15 required to unlock stocks"):setPosition(2,2):setForeground(colors.gray)
   else
-    stocksF:addLabel():setText("Stocks coming soon..."):setPosition(2,2):setForeground(colors.black)
+    -- Layout
+    stocksF:addLabel():setText("Ticker Price ^"):setPosition(2,1):setForeground(colors.gray)
+
+    local listFrame = stocksF:addFrame():setPosition(2,2):setSize(14,10):setBackground(colors.white)
+    local graphFrame = stocksF:addFrame():setPosition(17,1):setSize(21,7):setBackground(colors.white)
+    local ctlFrame   = stocksF:addFrame():setPosition(17,8):setSize(21,4):setBackground(colors.white)
+
+    local tickers = economyAPI.getStocks()   -- { {sym, name, price, min, max}, ... }
+    local selected = 1
+
+    -- left list of tickers (buttons)
+    local tickerBtns = {}
+    function M.renderList()
+      tickers = economyAPI.getStocks()
+      for i,info in ipairs(tickers) do
+        if not tickerBtns[i] then
+          tickerBtns[i] = listFrame:addButton():setPosition(1, (i-1)*2+1):setSize(12,1)
+            :onClick(function() selected = i; M.renderList(); M.renderChart(); M.renderControls() end)
+        end
+        -- compute delta vs previous history point
+        local snap = economyAPI.getStock(info.sym)
+        local h = snap.history or {}
+        local prev = (#h >= 2) and h[#h-1] or info.price
+        local delta = info.price - prev
+        local s = string.format("%-3s %6.0f %s", info.sym, info.price, (delta>=0 and "^" or "v"))
+        tickerBtns[i]:setText(s)
+          :setBackground(i==selected and colors.blue or colors.lightGray)
+          :setForeground(i==selected and colors.white or colors.gray)
+      end
+    end
+
+  -- simple 21x8 dot chart of last 21 points scaled into 8 rows
+    local chartDots = {}
+    local function clearChart()
+      for _,lbl in ipairs(chartDots) do if lbl and lbl.remove then pcall(function() lbl:remove() end) end end
+      chartDots = {}
+    end
+    function M.renderChart()
+      clearChart()
+      local info = tickers[selected]; if not info then return end
+      local snap = economyAPI.getStock(info.sym)
+      local hist = snap.history or {}
+      local n = #hist
+      local take = 21
+      local start = math.max(1, n - take + 1)
+      local view = {}
+      for i=start, n do table.insert(view, hist[i]) end
+      if #view == 0 then return end
+
+      -- normalize to 8 rows (y: 0..7 -> screen rows top-down)
+      local vmin, vmax = view[1], view[1]
+      for _,v in ipairs(view) do if v < vmin then vmin = v end; if v > vmax then vmax = v end end
+      local span = math.max(0.01, vmax - vmin)
+
+      for x=1,#view do
+        local v = view[x]
+        local t = (v - vmin) / span
+        local y = 1 + (6 - math.floor(t*7 + 0.5))   -- 1..8
+        chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(x, y):setText("*")
+      end
+
+      -- axes/legend
+      local minLbl = string.format("$%.0f", vmin)
+      local maxLbl = string.format("$%.0f", vmax)
+      chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(1, 7):setText(minLbl):setForeground(colors.gray)
+      chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(1, 1):setText(maxLbl):setForeground(colors.gray)
+    end
+
+  -- controls: qty picker + Buy / Sell + Buy Max / Sell All + holding info
+    local qtyDD, buyBtn, sellBtn, maxBtn, allBtn, holdLbl, priceLbl
+    function M.renderControls()
+      for _,c in ipairs({qtyDD,buyBtn,sellBtn,maxBtn,allBtn,holdLbl,priceLbl}) do
+        if c and c.remove then pcall(function() c:remove() end) end
+      end
+
+      local info = tickers[selected]; if not info then return end
+      local snap = economyAPI.getStock(info.sym)
+      priceLbl = ctlFrame:addLabel():setPosition(1,1)
+        :setText(string.format("%s @ $%.0f ", info.sym, info.price)):setForeground(colors.black)
+
+      holdLbl = ctlFrame:addLabel():setPosition(13,1)
+        :setText(string.format("Hold: %d", snap.qty or 0)):setForeground(colors.gray)
+
+      local qty = 1
+       local qtyLbl = ctlFrame:addLabel():setPosition(5,2):setText(tostring(qty)):setForeground(colors.black)
+      local function clamp(n) if n < 1 then return 1 elseif n > 9999 then return 9999 else return n end end
+      local function setQty(n) qty = clamp(n); if qtyLbl and qtyLbl.setText then qtyLbl:setText(string.format("%d", qty)) end end
+
+
+      -- (Optional) fast adjust with +5/-5; comment these two out if you don't want them
+      ctlFrame:addButton():setText("<<"):setPosition(2,2):setSize(2,1)
+        :setBackground(colors.lightGray):setForeground(colors.black)
+        :onClick(function() setQty(qty - 1) end)
+
+      ctlFrame:addButton():setText(">>"):setPosition(8,2):setSize(2,1)
+        :setBackground(colors.lightGray):setForeground(colors.black)
+        :onClick(function() setQty(qty + 1) end)
+
+      buyBtn  = ctlFrame:addButton():setText("Buy"):setPosition(10,2):setSize(5,1)
+        :setBackground(colors.green):setForeground(colors.white)
+        :onClick(function()
+          local q = qty
+          local ok,msg = economyAPI.buyStock(info.sym, q)
+          M.toast(ctlFrame, ok and ("Bought "..q.." "..info.sym) or msg, 3, 4, ok and colors.green or colors.red, 1.2)
+          M.renderList(); M.renderChart(); M.renderControls()
+        end)
+
+      sellBtn = ctlFrame:addButton():setText("Sell"):setPosition(16,2):setSize(5,1)
+        :setBackground(colors.red):setForeground(colors.white)
+        :onClick(function()
+          local q = qty
+          local ok,msg = economyAPI.sellStock(info.sym, q)
+          M.toast(ctlFrame, ok and ("Sold "..q.." "..info.sym) or msg, 3, 4, ok and colors.green or colors.red, 1.2)
+          M.renderList(); M.renderChart(); M.renderControls()
+        end)
+
+      maxBtn = ctlFrame:addButton():setText("BuyMax"):setPosition(1,3):setSize(7,1)
+        :setBackground(colors.blue):setForeground(colors.white)
+        :onClick(function()
+          local ok,msg = economyAPI.buyMax(info.sym)
+          M.toast(ctlFrame, ok and ("Bought MAX "..info.sym) or msg, 3, 4, ok and colors.green or colors.red, 1.2)
+          M.renderList(); M.renderChart(); M.renderControls()
+        end)
+
+      allBtn = ctlFrame:addButton():setText("SellAll"):setPosition(9,3):setSize(7,1)
+        :setBackground(colors.gray):setForeground(colors.white)
+        :onClick(function()
+          local ok,msg = economyAPI.sellAll(info.sym)
+          M.toast(ctlFrame, ok and ("Sold ALL "..info.sym) or msg, 3, 4, ok and colors.green or colors.red, 1.2)
+          M.renderList(); M.renderChart(); M.renderControls()
+        end)
+    end
+
+  -- initial
+    M.renderList(); M.renderChart(); M.renderControls()
   end
 
   show("loans")
