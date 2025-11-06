@@ -633,11 +633,6 @@ local function buildMainPage()
   table.insert(pageElements.main, title); table.insert(pageElements.main, guideBtn)
 end
 
-local function buildDevelopmentPage()
-  -- development paints directly on displayFrame via uiAPI to avoid container overlap
-  uiAPI.buildDevelopmentPage()
-end
-
 -- ==================
 -- Page switcher glue
 -- ==================
@@ -663,7 +658,7 @@ local function switchPage(name)
   if name == "stock" then
   pcall(function() if uiAPI.showStock then uiAPI.showStock() end end); return
   elseif name == "upgrades" then
-    rebuildUpgradesPage(); for _,el in ipairs(pageElements.upgrades) do if el.show then el:show() end end; return
+    rebuildUpgradesPage(); for _,el in ipairs(pageElements.upgrades) do if el.show then el:show() uiAPI.softRefreshStockLabels() end end; return
   elseif name == "development" then
     uiAPI.showDevelopment(); return
   else
@@ -813,6 +808,7 @@ if hour == 6 then
     -- 2) Soft refresh labels immediately so visible numbers update
     if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
     -- 3) Do a second soft refresh shortly after in case backend rolls async
+    uiAPI.softRefreshStockLabels()
     if uiAPI and uiAPI.runLater then
       uiAPI.runLater(1.0, function()
         if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
@@ -821,6 +817,15 @@ if hour == 6 then
   end
 else
   _didDailyStockRefresh = false
+end
+  if hour == 7 then
+  if not _didDailyLoanCharge then
+    _didDailyLoanCharge = true
+    pcall(function() if economyAPI and economyAPI.processDailyLoans then economyAPI.processDailyLoans() end end)
+    pcall(function() if economyAPI and economyAPI.cleanupLoans then economyAPI.cleanupLoans() end end)
+  end
+else
+  _didDailyLoanCharge = false
 end
 
   -- Money/Stage HUD
