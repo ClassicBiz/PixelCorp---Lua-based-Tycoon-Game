@@ -399,7 +399,10 @@ function M.buildStockPage()
     STOCK.catIdx = i
     M.buildStockPage()
     M.showStock()
+    M.softRefreshStockLabels()
   end)
+
+  
 
   local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   local items = {}
@@ -641,6 +644,11 @@ function M.createBaseLayout()
   local timeLabel  = topBar:addLabel():setText("Time: --"):setPosition(2, 1)
   local moneyLabel = topBar:addLabel():setText("Money: $0"):setPosition(25, 2)
   local stageLabel = topBar:addLabel():setText("Stage: --"):setPosition(25, 1)
+  local moneyPlus = topBar:addButton():setText("+"):setPosition(24,2):setSize(1,1):setBackground(colors.gray):setForeground(colors.green)
+  :onClick(function()
+    if M.openFinanceModal then M.openFinanceModal() end
+    if M._onMoneyPlus then pcall(M._onMoneyPlus) end
+  end)
   local levelLabel = topBar:addLabel():setText("lvl 1"):setPosition(1,3):setForeground(colors.yellow)
   local levelBarLabel = topBar:addLabel():setText("|----------| 0%"):setPosition(7,3):setForeground(colors.blue)
 
@@ -785,6 +793,7 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
   }
   M.refs.frames = { root = mainFrame, topbar = topBar, display = displayFrame, overlay = inventoryOverlay, pause = pauseMenu }
 
+
   -- Make them available globally for legacy code that referenced globals
   _G.mainFrame        = mainFrame
   _G.topBar           = topBar
@@ -897,4 +906,182 @@ end
 function M.pageBuilt(name)        return _pages[name] and _pages[name].built end
 function M.setPageBuilt(name, v)  if _pages[name] then _pages[name].built = not not v end end
 function M.getPageFrame(name)     return (NO_CONTAINER[name] and M.refs.displayFrame) or (_pages[name] and _pages[name].frame) end
+
+function M.onMoneyPlus(fn) M._onMoneyPlus = fn
+  M.openFinanceModal()
+end
+
+  local loanBtnById  = {}
+  local loanPosById  = {}
+  local loanInfoById = {}
+  local payoffBtnById= {}
+
+-- Finance modal (Loans / Stocks)
+function M.openFinanceModal()
+  local W,H = term.getSize()
+  local border = M.refs.mainFrame:addFrame():setSize(46,16):setPosition(3, 3):setBackground(colors.lightGray):setZIndex(140)
+  local box = border:addFrame():setSize(44,14):setPosition(2,2):setBackground(colors.white):setZIndex(141)
+  box:addLabel():setText("Finance"):setPosition(17,1):setForeground(colors.gray)
+
+  local tabs = box:addMenubar():setPosition(4,2):setSize(32,1):setScrollable(false):addItem("Loans"):addItem("Stocks")
+  local pages = {
+    loans  = box:addFrame():setPosition(2,4):setSize(44,11):setBackground(colors.white):hide(),
+    stocks = box:addFrame():setPosition(2,4):setSize(44,12):setBackground(colors.white):hide(),
+  }
+  function show(k) for n,f in pairs(pages) do if f.hide then f:hide() end end; pages[k]:show() end
+  tabs:onChange(function(self, idx) local i=self.getItemIndex and self:getItemIndex() or 1; show((i==1) and "loans" or "stocks") end)
+
+  -- Close button
+  border:addButton():setText(" X "):setPosition(43,1):setSize(3,1):setBackground(colors.red):setForeground(colors.white):onClick(function() border:hide(); border:remove() end)
+
+  -- Loans tab content
+  local loansF = pages.loans
+  loansF:addLabel():setText("Available Loans (7-day term, 20% simple):"):setPosition(1,1):setForeground(colors.black)
+
+  -- Determine unlocks
+  local Lvl = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
+  local stageUnlocked = (stageAPI and stageAPI.isUnlocked and stageAPI.isUnlocked("lemonade")) or true
+
+  local defs = {
+    { name="$500 Week Loan",   id="loan_500",  principal=500,  unlockLevel=1,  requiresStage=stageUnlocked },
+    { name="$1000 Week Loan",  id="loan_1000", principal=1000, unlockLevel=15, requiresStage=stageUnlocked },
+    { name="$1500 Week Loan",  id="loan_1500", principal=1500, unlockLevel=30, requiresStage=stageUnlocked },
+    { name="$2500 Week Loan",  id="loan_2500", principal=2500, unlockLevel=45, requiresStage=stageUnlocked },
+  }
+
+  local y=2
+  -- Track buttons per loan id, and helpers to compute state
+  local loanBtnById = {}
+
+
+  local function anyActiveLoans()
+    if economyAPI and economyAPI.listLoans then
+      for _,L in ipairs(economyAPI.listLoans()) do
+        if (L.remaining_principal or 0) > 0 then return true end
+      end
+    end
+    return false
+  end
+
+  local function _activeLoanIds()
+    local ids = {}
+    local list = {}
+    if economyAPI and economyAPI.listLoans then list = economyAPI.listLoans() end
+    for _, L in ipairs(list) do
+      if (L.remaining_principal or 0) > 0 and L.id then
+        ids[tostring(L.id)] = true
+      end
+    end
+    return ids
+  end
+
+  function refreshLoanButtons()
+    -- Build a quick map of active loans (remaining_principal > 0)
+    local activeById = {}
+    local list = {}
+    if economyAPI and economyAPI.listLoans then list = economyAPI.listLoans() end
+    for _, L in ipairs(list) do
+      if (L.remaining_principal or 0) > 0 and L.id then
+        activeById[tostring(L.id)] = L
+      end
+    end
+
+    -- Fixed layout: row at y = 2 + (idx-1)*2
+    for idx, d in ipairs(defs) do
+      local yRow = 2 + (idx - 1) * 2 + 1
+      loanPosById[d.id] = yRow
+
+      local unlocked = d.requiresStage and (Lvl >= d.unlockLevel)
+
+      -- Create the button once, then reuse
+      local btn = loanBtnById[d.id]
+      if not btn then
+        btn = loansF:addButton()
+        loanBtnById[d.id] = btn
+        btn:onClick(function()
+          if not unlocked then return end
+          local ok2, res = economyAPI.createLoan({
+            id=d.id, name=d.name, principal=d.principal, days=7, interest=0.20,
+            unlockLevel=d.unlockLevel, unlockStage="lemonade_stand"
+          })
+          if ok2 then
+            M.toast(loansF, "Loan of $"..d.principal.." taken out for 7 days", 4, 11, colors.green, 2)
+          else
+            M.toast(loansF, res or "Active loan exists", 10, 11, colors.red, 1.5)
+          end
+          refreshLoanButtons()
+        end)
+      end
+
+      -- Position and style (deterministic; no 'y = y + 2' increments)
+      btn:setPosition(2, yRow):setSize(32, 1)
+
+      local isThisActive = (activeById[d.id] ~= nil)
+      if isThisActive then
+        btn:setText("Taken - pay off to reapply")
+        btn:setBackground(colors.lightGray):setForeground(colors.gray)
+        btn:disable()
+      else
+        btn:setText(unlocked and ("Take " .. d.name) or ("Locked (Lvl " .. d.unlockLevel .. ")"))
+        btn:setBackground(unlocked and colors.blue or colors.lightGray)
+        btn:setForeground(unlocked and colors.white or colors.gray)
+        if unlocked then btn:enable() else btn:disable() end
+      end
+    end
+
+    -- Clear any old per-loan detail widgets
+    for _, lbl in pairs(loanInfoById)  do if lbl and lbl.remove then pcall(function() lbl:remove() end) end end
+    for _, pb  in pairs(payoffBtnById) do if pb  and pb.remove  then pcall(function() pb:remove()  end) end end
+    loanInfoById, payoffBtnById = {}, {}
+
+    -- Helper for daily charge with cents
+    local function dailyCharge(L)
+      local dp = tonumber(L.dailyPrincipal or L.baseDaily or 0) or 0
+      if dp <= 0 then
+        local pr = tonumber(L.principal or 0) or 0
+        local d  = tonumber(L.days_total or 7) or 7
+        dp = math.ceil((pr / d) * 100) / 100
+      end
+      local r = tonumber(L.interest or 0) or 0
+      return math.floor((dp * (1 + r)) * 100 + 0.5) / 100
+    end
+
+    -- Draw details UNDER each active loan's button; payoff to the RIGHT of that row
+    for id, L in pairs(activeById) do
+      local yRow = (loanPosById[id] or 2) + 1
+      loanInfoById[id] = loansF:addLabel()
+        :setText(("|Daily: $%.2f|Rem: $%.2f|%d/%d")
+          :format(dailyCharge(L), tonumber(L.remaining_principal or 0) or 0, L.days_paid or 0, L.days_total or 7))
+        :setPosition(2, yRow)
+        :setForeground(colors.black)
+
+      payoffBtnById[id] = loansF:addButton()
+        :setText("Pay Off")
+        :setPosition(35, yRow-1)
+        :setSize(9, 1)
+        :setBackground(colors.green)
+        :setForeground(colors.white)
+        :onClick(function()
+          local remaining = L.remaining_principal
+          local ok, msg = economyAPI.payoffLoan(L.id)
+          M.toast(loansF, ok and "Remaining Loan of $"..tonumber(remaining or 0).." Paid in Full." or (msg or "Failed"), 4, 11, ok and colors.green or colors.red, 1.8)
+          refreshLoanButtons()
+        end)
+    end
+  end
+
+  refreshLoanButtons()
+
+  -- Stocks tab content
+  local stocksF = pages.stocks
+  local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
+  if L < 3 then
+    stocksF:addLabel():setText("Level 3 required to unlock stocks"):setPosition(2,2):setForeground(colors.gray)
+  else
+    stocksF:addLabel():setText("Stocks coming soon..."):setPosition(2,2):setForeground(colors.black)
+  end
+
+  show("loans")
+end
+
 return M
