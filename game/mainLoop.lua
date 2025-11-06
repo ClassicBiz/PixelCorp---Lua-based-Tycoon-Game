@@ -736,7 +736,6 @@ uiAPI.onSkipNight(function()
   local h, m = t.hour or 0, t.minute or 0
   local allowed = (h >= 20) or (h < 5) or (h == 5 and m < 30)
   if not allowed then
-    uiAPI.toast("displayFrame", "Skip available 20:00→05:30", 10,4, colors.gray, 1.6)
     return
   end
   local prev = timeAPI.getSpeed()
@@ -848,7 +847,10 @@ function refreshUI()
   do
     local t = timeAPI.getTime()
     local hour = t.hour
-
+    if hour >= 20 then
+      uiAPI.toast("displayFrame", "Skip available 20:00 -> 05:30", 10,4, colors.gray, 0.5)
+      uiAPI._refreshSkipOr4x()
+    end
     -- remember last hour we stepped on (persist outside 'do' via upvalue)
     _lastStockHour = _lastStockHour or hour
 
