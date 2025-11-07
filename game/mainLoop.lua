@@ -743,7 +743,7 @@ uiAPI.onSkipNight(function()
   local ok = timeAPI.skipNight()
   timeAPI.setSpeed(prev or "normal"); uiAPI.updateSpeedButtons()
   refreshUI()
-  if ok then uiAPI.toast("displayFrame", "New day!", 12,4, colors.cyan, 1.6) end
+  if ok then uiAPI.toast("displayFrame", "New day!", 20,5, colors.cyan, 1.6) end
 end)
 
 -- =====================
@@ -783,6 +783,7 @@ local function trySellOnce()
     uiAPI.toast("topbar", ("+$%d"):format(price), 36,2, colors.green,1.7)
     uiAPI.toast("topbar", ("+%d xp"):format(math.floor(xpGrant+0.5)), 10,3, colors.green,1.7)
     uiAPI.toast("displayFrame", ("Sold 1x %s"):format(pick.label), 9,18, colors.yellow,1.7)
+    uiAPI.refreshBalances()
     if inventoryOverlay and inventoryOverlay.isVisible and inventoryOverlay:isVisible() then refreshInventoryTabs() end
     return true
   end
@@ -810,6 +811,7 @@ function refreshUI()
   local t = timeAPI.getTime()
   uiAPI.setHUDTime(string.format("Time: Y%d M%d D%d %02d:%02d", t.year, t.month, t.day, t.hour, t.minute))
 
+  pcall(function() if uiAPI._refreshSkipOr4x then uiAPI._refreshSkipOr4x() end end)
   -- Daily market refresh & page repaint if needed (6:00)
   local s = saveAPI.get(); local day, hour, minute = s.time.day, s.time.hour, s.time.minute
   if hour == 6 then
