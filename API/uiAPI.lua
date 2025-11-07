@@ -24,6 +24,7 @@ local itemsAPI   = require(root.."/API/itemsAPI")
 local upgradeAPI = require(root.."/API/upgradeAPI")
 local inventoryAPI = require(root.."/API/inventoryAPI")
 local eventAPI = require(root.."/API/eventAPI")
+local settingsOK, settingsAPI = pcall(require, root.."/API/settingsAPI")
 -- --- State container ---
 M.refs = {
   mainFrame = nil,
@@ -47,9 +48,9 @@ local function _stageGraph()
   -- your stage graph (use your real one if different)
   return {
     odd_jobs       = { name="Odd Jobs",       next="lemonade_stand", req_lvl=0,    req_lic="lemonade", cost=100  },
-    lemonade_stand = { name="Lemonade Stand", next="warehouse",      req_lvl=50,   req_lic="warehouse", cost=1000 },
-    warehouse      = { name="Warehouse",      next="factory",        req_lvl=125,  req_lic="factory",   cost=5000 },
-    factory        = { name="Factory",        next="highrise",       req_lvl=200,  req_lic="highrise",  cost=15000 },
+    lemonade_stand = { name="Lemonade Stand", next="warehouse",      req_lvl=50,   req_lic="warehouse", cost=5000 },
+    warehouse      = { name="Warehouse",      next="factory",        req_lvl=125,  req_lic="factory",   cost=50000 },
+    factory        = { name="Factory",        next="highrise",       req_lvl=200,  req_lic="highrise",  cost=250000 },
     highrise       = { name="High-Rise Corporation" }
   }
 end
@@ -604,61 +605,65 @@ function M.createBaseLayout()
       :hide()
 
   local displayFrame = mainFrame:addFrame()
-      :setSize(W, H - 2)
+      :setSize(W+1, H - 2)
       :setPosition(0, 3)
       :setZIndex(0)
       :hide()
 
-  local SIDEBAR_W = 16
-  local sidebar = mainFrame:addScrollableFrame()
-      :setBackground(colors.lightGray)
-      :setPosition(W, 4)
-      :setSize(SIDEBAR_W, H - 3)
-      :setZIndex(25)
-      :setDirection("vertical")
-      :hide()
+          local mode = tostring((settingsAPI and settingsAPI.navMode and settingsAPI.navMode()) or "sidebar")
+  if mode == "sidebar" then
 
-  local function _sidebarExpandedX() return W - (SIDEBAR_W - 1) end
-  local function _sidebarHiddenX()   return W end
+    local SIDEBAR_W = 16
+    sidebar = mainFrame:addScrollableFrame()
+        :setBackground(colors.lightGray)
+        :setPosition(W, 4)
+        :setSize(SIDEBAR_W, H - 3)
+        :setZIndex(25)
+        :setDirection("vertical")
 
+    local function _sidebarExpandedX() return W - (SIDEBAR_W - 1) end
+    local function _sidebarHiddenX()   return W end
+
+
+    function M.openSidebar()
+      if not sidebar then return end
+      sidebar:setPosition(_sidebarExpandedX(), 4)
+          local closeBtn = sidebar:addButton()
+        :setText(">")
+        :setPosition(1, 1)
+        :setSize(1, 17)
+        :setBackground(colors.lightGray)
+        :setForeground(colors.black)
+        :onClick(function() M.closeSidebar() end)
+    end
+
+    function M.closeSidebar()
+      if not sidebar then return end
+      sidebar:setPosition(_sidebarHiddenX(), 4)
         local openBtn = sidebar:addButton()
-      :setText("<")
-      :setPosition(1, 1)
-      :setSize(1, 16)
-      :setBackground(colors.lightGray)
-      :setForeground(colors.black)
+        :setText("<")
+        :setPosition(1, 1)
+        :setSize(1, 17)
+        :setBackground(colors.lightGray)
+        :setForeground(colors.black)
+        :onClick(function() M.openSidebar() end)
+    end
 
-  function M.openSidebar()
-    if not sidebar then return end
-    sidebar:setPosition(_sidebarExpandedX(), 4)
-        local closeBtn = sidebar:addButton()
-      :setText(">")
-      :setPosition(1, 1)
-      :setSize(1, 17)
-      :setBackground(colors.lightGray)
-      :setForeground(colors.black)
-      :onClick(function() M.closeSidebar() end)
+    sidebar:onGetFocus(function(self)
+      M.openSidebar()
+    end)
+    sidebar:onLoseFocus(function(self)
+      M.closeSidebar()
+    end)
+  else
+      navDD = displayFrame:addDropdown()
+        :setPosition(2, 2)   -- left edge of the top bar; adjust if you want
+        :setSize(14, 1)
+        :setBackground(colors.lightBlue)
+        :setForeground(colors.black)
+        :setSelectionColor(colors.white, colors.cyan)
+                :setZIndex(25)
   end
-
-  function M.closeSidebar()
-    if not sidebar then return end
-    sidebar:setPosition(_sidebarHiddenX(), 4)
-      local openBtn = sidebar:addButton()
-      :setText("<")
-      :setPosition(1, 1)
-      :setSize(1, 17)
-      :setBackground(colors.lightGray)
-      :setForeground(colors.black)
-      :onClick(function() M.openSidebar() end)
-  end
-
-  sidebar:onGetFocus(function(self)
-    M.openSidebar()
-  end)
-  sidebar:onLoseFocus(function(self)
-    M.closeSidebar()
-  end)
-
   -- Inventory overlay shell
   local inventoryOverlay = mainFrame:addMovableFrame()
       :setSize(42, 16)
@@ -864,6 +869,7 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
   M.refs.displayFrame = displayFrame
   M.refs.topBar = topBar
   M.refs.sidebar = sidebar
+  M.refs.navDD = navDD
   M.refs.inventoryOverlay = inventoryOverlay
   M.refs.loading = buildLoading(mainFrame)
   M.refs.speedButtons = speedButtons
@@ -1016,13 +1022,11 @@ function M.openFinanceModal()
 
   box:addLabel():setText("Finance"):setPosition(17,1):setForeground(colors.gray)
 
-  -- Tabs now include Bank
   local tabs = box:addMenubar()
       :setPosition(6,2):setSize(33,1)
       :setScrollable(false)
       :addItem("- Bank -"):addItem("= Loans ="):addItem("- Stocks -")
 
-  -- Pages
   local pages = {
     bank   = box:addFrame():setPosition(2,4):setSize(44,11):setBackground(colors.white):hide(),
     loans  = box:addFrame():setPosition(2,4):setSize(44,11):setBackground(colors.white):hide(),
@@ -1048,10 +1052,12 @@ function M.openFinanceModal()
       :onClick(function() border:hide(); border:remove() end)
 
   ----------------------------------------------------------------
-  -- LOANS TAB (unchanged from your version except it now coexists)
+  -- LOANS TAB
   ----------------------------------------------------------------
   local loansF = pages.loans
-  loansF:addLabel():setText("Available Loans (7-day term, 20% simple):"):setPosition(1,1):setForeground(colors.black)
+  local loanRate = (settingsAPI.loanInterest and settingsAPI.loanInterest()) or 0.20
+  if loanRate == 0.1 then loanRate = 10 elseif loanRate == 0.2 then loanRate = 20 elseif loanRate == 0.3 then loanRate = 30 end
+  loansF:addLabel():setText("Available Loans (7-day term, "..loanRate.."% simple):"):setPosition(1,1):setForeground(colors.black)
   local Lvl = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   local stageUnlocked = (stageAPI and stageAPI.isUnlocked and stageAPI.isUnlocked("lemonade")) or true
 
@@ -1086,8 +1092,9 @@ function M.openFinanceModal()
         loanBtnById[d.id] = btn
         btn:onClick(function()
           if not unlocked then return end
+          local loanRate = (settingsAPI.loanInterest and settingsAPI.loanInterest()) or 0.20
           local ok2, res = economyAPI.createLoan({
-            id=d.id, name=d.name, principal=d.principal, days=7, interest=0.20,
+            id=d.id, name=d.name, principal=d.principal, days=7, interest=loanRate,
             unlockLevel=d.unlockLevel, unlockStage="lemonade_stand"
           })
           if ok2 then
@@ -1160,7 +1167,7 @@ function M.openFinanceModal()
 local bankF = pages.bank
 if bankF and bankF.removeChildren then bankF:removeChildren() end
 bankF:addLabel():setText("---] PixelCity Bank [---")
-      :setPosition(12,1):setForeground(colors.black)
+      :setPosition(9,1):setForeground(colors.black)
 
 local chkLbl = bankF:addLabel():setPosition(2,3):setText("Checking: $0"):setForeground(colors.black)
 local savLbl = bankF:addLabel():setPosition(2,4):setText("Savings:  $0"):setForeground(colors.black)
