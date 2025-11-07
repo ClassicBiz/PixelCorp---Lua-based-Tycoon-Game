@@ -12,7 +12,7 @@ local function getRoot()
 end
 local root = getRoot()
 local saveAPI   = require(root.."/API/saveAPI")
-
+local settingsOK, settingsAPI = pcall(require, root.."/API/settingsAPI")
 local U = {}
 
 -- Catalog: add min_level to each; keep your costs as is
@@ -104,7 +104,12 @@ end
 function U.cost(key)
   local def = U.catalog[key]; if not def then return 0 end
   local lvl = U.level(key)
-  return def.cost(lvl)
+  local base = def.cost(lvl)
+  local scale = 1.0
+  if settingsOK and settingsAPI and settingsAPI.upgradeCostScale then
+    scale = tonumber(settingsAPI.upgradeCostScale()) or 1.0
+  end
+  return math.floor(base * scale + 0.5)
 end
 
 function U.purchase(key, spendFn)
