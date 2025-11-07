@@ -38,7 +38,8 @@ local craftAPI     = require(root.."/API/craftAPI")
 local tutorialAPI  = require(root.."/API/tutorialAPI")
 local guideAPI     = require(root.."/API/guideAPI")
 local guideData    = require(root.."/API/guideData")
-local eventAPI = require(root.."/API/eventAPI") 
+local eventAPI = require(root.."/API/eventAPI")
+local settingsAPI = require(root.. "/API/settingsAPI")
 
 -- Seed RNG safely
 pcall(function() math.randomseed(os.epoch("utc") % 2^31); for i=1,3 do math.random() end end)
@@ -53,6 +54,7 @@ local UI = uiAPI.createBaseLayout()
 local mainFrame        = UI.mainFrame
 local topBar           = UI.topBar
 local sidebar          = UI.sidebar
+local navDD            = UI.navDD
 local displayFrame     = UI.displayFrame
 local inventoryOverlay = UI.inventoryOverlay
 local pauseMenu        = UI and UI.pauseMenu or pauseMenu
@@ -144,6 +146,17 @@ local function _clearGroup(name)
     end
     pageElements[name] = {}
   end
+end
+
+local _lastAutoKey = nil
+local function autosave(reasonKey)  -- e.g. "06" or "20"
+  if not (settingsAPI and settingsAPI.autosaveEnabled and settingsAPI.autosaveEnabled()) then return end
+  if _lastAutoKey == reasonKey then return end  -- prevent double-firing in same tick/frame
+  _lastAutoKey = reasonKey
+
+  saveAPI.save()
+  saveAPI.commit(saveAPI.getActiveProfile())
+  uiAPI.toast("displayFrame", "Game saved!", 40, 19, colors.blue, 2)
 end
 
 -- =====================
@@ -688,7 +701,7 @@ local function buildUpgradeRow(key, y)
       local okEnabled = (state~="locked") and not (oneTime and ownedOT) and not (not oneTime and atCap) and _canAfford(cost) and cBuy
       if not okEnabled then uiAPI.toast("displayFrame", whyNow or "Locked", 17,4, colors.red,1.0); return end
       local ok, msg = upgradeAPI.purchase(key, function(c) return economyAPI.spendMoney(c) end)
-      uiAPI.toast("displayFrame", msg or (ok and "Purchased!" or "Purchase failed"), 16,4, ok and colors.cyan or colors.red, 1.0)
+      uiAPI.toast("displayFrame", msg or (ok and "Purchased!" or "Purchase failed"), 20,5, ok and colors.cyan or colors.red, 1.0)
       buildUpgradeRow(key, y); if currentPage=="upgrades" then for _,el in ipairs(upgradeRowRefs[key] or {}) do if el.show then el:show() end end end
     end)
 
@@ -699,9 +712,7 @@ end
 
 local function rebuildUpgradesPage()
   _clearGroup("upgrades")
-  local y=3
-  local hdr = displayFrame:addLabel():setText("Upgrades"):setPosition(2,y):setZIndex(10):hide()
-  table.insert(pageElements.upgrades, hdr); y=y+1
+  local y=4
   local Lvl = (levelAPI.getLevel and levelAPI.getLevel()) or 1
   if upgradeAPI.isVisibleAtLevel("seating",    Lvl) then buildUpgradeRow("seating",    y); y=y+2 end
   if upgradeAPI.isVisibleAtLevel("marketing",  Lvl) then buildUpgradeRow("marketing",  y); y=y+2 end
@@ -722,7 +733,15 @@ local function buildMainPage()
     :onClick(function()
        guideAPI.show()
     end)
-  table.insert(pageElements.main, title); table.insert(pageElements.main, guideBtn)
+    --local dbg = mainFrame:addLabel():setPosition(2, 10):setForeground(colors.lightGray):setZIndex(100)
+local function refreshSettingsDebug()
+  local s = settingsAPI.load()
+  local g = (s and s.general) or {}
+  dbg:setText(("diff:%s nav:%s tut:%s auto:%s")
+    :format(tostring(g.difficulty or "?"), tostring(g.navigation or "?"),
+            g.tutorial and "on" or "off", g.autosave and "on" or "off"))
+end
+  table.insert(pageElements.main, title); table.insert(pageElements.main, guideBtn); table.insert(pageElements.main, dbg)
 end
 
 -- ==================
@@ -760,15 +779,84 @@ local function switchPage(name)
   end
 end
 
+local NAV_PAGES = {"Main","Development","Stock","Upgrades"}
+local NAV_ORDER = {"main","development","stock","upgrades"}
+local NAV_NAME  = { Main="main", Development="development", Stock="stock", Upgrades="upgrades" }
+
 local function populateSidebar()
-  local pages = {"Main","Development","Stock","Upgrades"}
-  for i, page in ipairs(pages) do
+  sidebar:setBackground(colors.white)
+  -- clear old buttons (safe even if empty)
+  pcall(function() sidebar:removeChildren() end)
+  for i, page in ipairs(NAV_PAGES) do
     local pname = string.lower(page)
-    sidebar:setBackground(colors.white)
-  sBtn =  sidebar:addButton()
-      :setText(page):setPosition(3, 2 + (i-1)*4):setSize(13,3)
-      :setBackground(colors.lightBlue):setForeground(colors.black)
+    sidebar:addButton()
+      :setText(page)
+      :setPosition(3, 2 + (i-1)*4)
+      :setSize(13, 3)
+      :setBackground(colors.lightBlue)
+      :setForeground(colors.black)
       :onClick(function() switchPage(pname) end)
+    openBtn = sidebar:addButton()
+        :setText("<")
+        :setPosition(1, 1)
+        :setSize(1, 16)
+        :setBackground(colors.lightGray)
+        :setForeground(colors.black)
+  end
+end
+
+local function populateDropdown()
+  -- reset items
+  if navDD.removeItems then pcall(function() navDD:removeItems() end) end
+  for _, page in ipairs(NAV_PAGES) do navDD:addItem(page) end
+
+  -- set current selection to the active page if possible
+  local want = (currentPage or "main")
+  local wantName = (want:sub(1,1):upper()..want:sub(2))
+  if navDD.getItemCount and navDD.selectItem then
+    for i=1, navDD:getItemCount() do
+      local it = navDD:getItem(i)
+      local txt = (type(it)=="table" and it.text) or it or ""
+      if txt == wantName then navDD:selectItem(i); break end
+    end
+  end
+
+
+  navDD:onChange(function(self, value)
+    local key
+
+    -- 1) Try index (most reliable)
+    if self.getItemIndex then
+      local idx = self:getItemIndex()
+      key = NAV_ORDER[idx]
+    end
+
+    -- 2) If we didn’t get it, try value/text
+    if not key then
+      local txt = value
+      if type(value) == "table" and value.text then
+        txt = value.text
+      elseif type(value) == "number" and self.getItem then
+        local it = self:getItem(value)
+        txt = (type(it)=="table" and it.text) or it
+      end
+      txt = tostring(txt or ""):gsub("^%s+",""):gsub("%s+$","")
+      key = NAV_NAME[txt] or txt:lower()
+    end
+
+    -- 3) Final guard and go
+    if key == "main" or key == "development" or key == "stock" or key == "upgrades" then
+      switchPage(key)
+    end
+  end)
+end
+
+local function applyNavigationMode()
+  local mode = tostring((settingsAPI and settingsAPI.navMode and settingsAPI.navMode()) or "sidebar")
+  if mode == "sidebar" then
+    populateSidebar()
+  else
+    populateDropdown()
   end
 end
 
@@ -890,16 +978,17 @@ timeAPI.onTick(function(_)
   if not _isOpen() then openLabel:setText("Closed"):setForeground(colors.red); return end
   openLabel:setText("Open"):setForeground(colors.green)
 
-  -- about 4 customers/hour baseline, paced per minute tick
-  local CUSTOMERS_PER_HOUR = 4
+  local CUSTOMERS_PER_HOUR = (settingsAPI and settingsAPI.customersPerHour and settingsAPI.customersPerHour()) or 4
   local lambdaPerMinute = (CUSTOMERS_PER_HOUR / 60.0)
   -- integer attempts
   for i=1, math.floor(lambdaPerMinute) do trySellOnce() end
   -- fractional attempt
   local rem = lambdaPerMinute - math.floor(lambdaPerMinute)
   if rem > 0 and math.random() < rem then trySellOnce() end
+  -- reset debounce once minute moves past the autosave minute
 end)
   _didDailyStockRefresh = false
+  local save = false
 -- ==============
 -- UI Refreshers
 -- ==============
@@ -910,6 +999,8 @@ function refreshUI()
   pcall(function() if uiAPI._refreshSkipOr4x then uiAPI._refreshSkipOr4x() end end)
   -- Daily market refresh & page repaint if needed (6:00)
   local s = saveAPI.get(); local day, hour, minute = s.time.day, s.time.hour, s.time.minute
+  if hour == 6 then autosave("06") end  -- opening
+  if hour == 20 then autosave("20") end  -- closing
   if hour == 6 then
     if not _didDailyStockRefresh then
       _didDailyStockRefresh = true
@@ -923,13 +1014,14 @@ function refreshUI()
       if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
       -- 3) Do a second soft refresh shortly after in case backend rolls async
       uiAPI.softRefreshStockLabels()
+
       if uiAPI and uiAPI.runLater then
         uiAPI.runLater(1.0, function()
           if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
         end)
       end
     end
-  else
+    else
     _didDailyStockRefresh = false
   end
   if hour == 7 then
@@ -946,7 +1038,7 @@ function refreshUI()
     local t = timeAPI.getTime()
     local hour = t.hour
     if hour >= 20 then
-      uiAPI.toast("displayFrame", "Skip available 20:00 -> 05:30", 10,5, colors.gray, 0.5)
+      uiAPI.toast("displayFrame", "Skip available 20:00 -> 05:30", 10,19, colors.gray, 0.5)
       uiAPI._refreshSkipOr4x()
     end
     -- remember last hour we stepped on (persist outside 'do' via upvalue)
@@ -1013,7 +1105,7 @@ local function initialize()
       buildMainPage()
       uiAPI.buildStockPage()
       rebuildUpgradesPage()
-      populateSidebar()
+      applyNavigationMode()
       os.sleep(1.25)
       uiAPI.setLoading("Starting time...", 70)
       startTimeUpdates()
