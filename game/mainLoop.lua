@@ -602,7 +602,7 @@ local function populateCrafting()
       local computedPrice = craftAPI.computeCraftPrice(base, fruit, sweet, topping)
       if economyAPI and economyAPI.setPrice then economyAPI.setPrice(key, computedPrice) end
       refreshInventoryTabs()
-      uiAPI.toast("overlay", ("Crafted: "..tostring(label).." x5"), 3, 13, colors.orange, 2.2)
+      uiAPI.toast(inventoryTabs["Crafting"], ("Crafted: "..tostring(label).." x5"), 3, 10, colors.orange, 2.2)
     else
       status:setText(_safeText("Error: "..tostring(label), 28))
     end
@@ -813,9 +813,9 @@ end
 -- ==================
 uiAPI.onPauseOpen(function() timeAPI.setSpeed("pause"); uiAPI.updateSpeedButtons() end)
 uiAPI.onPauseResume(function() timeAPI.setSpeed("normal"); uiAPI.updateSpeedButtons() end)
-uiAPI.onPauseSave(function() saveAPI.save(); saveAPI.commit(); uiAPI.toast("pauseMenu","Game saved", 19,17, colors.green,1.7) end)
-uiAPI.onPauseLoad(function() saveAPI.load(); refreshUI(); uiAPI.toast("pauseMenu","Game loaded", 19,17, colors.yellow,1.7) end)
-uiAPI.onPauseSettings(function() uiAPI.toast("pauseMenu","Settings coming soon", 11,17, colors.gray,1.7) end)
+uiAPI.onPauseSave(function() saveAPI.save(); saveAPI.commit(); uiAPI.toast(pauseMenu,"Game saved", 10,12, colors.green,1.7) end)
+uiAPI.onPauseLoad(function() saveAPI.load(); refreshUI(); uiAPI.toast(pauseMenu,"Game loaded", 9,12, colors.yellow,1.7) end)
+uiAPI.onPauseSettings(function() uiAPI.toast(pauseMenu,"Settings coming soon", 3,12, colors.gray,1.7) end)
 uiAPI.onPauseQuitToMenu(function()
   saveAPI.save(); basalt.stop()
   local ok, err = pcall(function() shell.run(fs.combine(root, "PixelCorp.lua")) end)
