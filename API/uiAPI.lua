@@ -898,25 +898,55 @@ end
   local loanInfoById = {}
   local payoffBtnById= {}
 
--- Finance modal (Loans / Stocks)
+-- Finance modal (Bank / Loans / Stocks)
 function M.openFinanceModal()
   local W,H = term.getSize()
-  local border = M.refs.mainFrame:addFrame():setSize(46,16):setPosition(3, 3):setBackground(colors.lightGray):setZIndex(140)
-  local box = border:addFrame():setSize(44,14):setPosition(2,2):setBackground(colors.white):setZIndex(141)
+  local border = M.refs.mainFrame:addFrame()
+      :setSize(46,16):setPosition(3, 3)
+      :setBackground(colors.lightGray):setZIndex(140)
+
+  local box = border:addFrame()
+      :setSize(44,14):setPosition(2,2)
+      :setBackground(colors.white):setZIndex(141)
+
   box:addLabel():setText("Finance"):setPosition(17,1):setForeground(colors.gray)
 
-  local tabs = box:addMenubar():setPosition(4,2):setSize(32,1):setScrollable(false):addItem("Loans"):addItem("Stocks")
+  -- Tabs now include Bank
+  local tabs = box:addMenubar()
+      :setPosition(4,2):setSize(32,1)
+      :setScrollable(false)
+      :addItem("Bank"):addItem("Loans"):addItem("Stocks")
+
+  -- Pages
   local pages = {
+    bank   = box:addFrame():setPosition(2,4):setSize(44,11):setBackground(colors.white):hide(),
     loans  = box:addFrame():setPosition(2,4):setSize(44,11):setBackground(colors.white):hide(),
     stocks = box:addFrame():setPosition(2,4):setSize(44,12):setBackground(colors.white):hide(),
   }
-  function show(k) for n,f in pairs(pages) do if f.hide then f:hide() end end; pages[k]:show() end
-  tabs:onChange(function(self, idx) local i=self.getItemIndex and self:getItemIndex() or 1; show((i==1) and "loans" or "stocks") end)
-  border:addButton():setText(" X "):setPosition(43,1):setSize(3,1):setBackground(colors.red):setForeground(colors.white):onClick(function() border:hide(); border:remove() end)
-  -- Loans tab content
+
+  local function show(k)
+    for _,f in pairs(pages) do if f.hide then f:hide() end end
+    pages[k]:show()
+  end
+
+  tabs:onChange(function(self, idx)
+    local i = (self.getItemIndex and self:getItemIndex()) or idx or 1
+    if     i == 1 then show("bank")
+    elseif i == 2 then show("loans")
+    else               show("stocks")
+    end
+  end)
+
+  border:addButton():setText(" X ")
+      :setPosition(43,1):setSize(3,1)
+      :setBackground(colors.red):setForeground(colors.white)
+      :onClick(function() border:hide(); border:remove() end)
+
+  ----------------------------------------------------------------
+  -- LOANS TAB (unchanged from your version except it now coexists)
+  ----------------------------------------------------------------
   local loansF = pages.loans
   loansF:addLabel():setText("Available Loans (7-day term, 20% simple):"):setPosition(1,1):setForeground(colors.black)
-  -- Determine unlocks
   local Lvl = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   local stageUnlocked = (stageAPI and stageAPI.isUnlocked and stageAPI.isUnlocked("lemonade")) or true
 
@@ -927,10 +957,9 @@ function M.openFinanceModal()
     { name="$2500 Week Loan",  id="loan_2500", principal=2500, unlockLevel=45, requiresStage=stageUnlocked },
   }
 
-  local y=2
-  local loanBtnById = {}
+  local loanBtnById, loanPosById, loanInfoById, payoffBtnById = {}, {}, {}, {}
 
-  function refreshLoanButtons()
+  local function refreshLoanButtons()
     local activeById = {}
     local list = {}
     if economyAPI and economyAPI.listLoans then list = economyAPI.listLoans() end
@@ -957,6 +986,8 @@ function M.openFinanceModal()
             unlockLevel=d.unlockLevel, unlockStage="lemonade_stand"
           })
           if ok2 then
+            refreshButtons()
+            M.refreshBalances()
             M.toast(loansF, "Loan of $"..d.principal.." taken out for 7 days", 4, 11, colors.green, 2)
           else
             M.toast(loansF, res or "Active loan exists", 10, 11, colors.red, 1.5)
@@ -964,10 +995,10 @@ function M.openFinanceModal()
           refreshLoanButtons()
         end)
       end
-      btn:setPosition(2, yRow):setSize(32, 1)
 
-      local isThisActive = (activeById[d.id] ~= nil)
-      if isThisActive then
+      btn:setPosition(2, yRow):setSize(32, 1)
+      isActive = (activeById[d.id] ~= nil)
+      if isActive then
         btn:setText("Taken - pay off to reapply")
         btn:setBackground(colors.lightGray):setForeground(colors.gray)
         btn:disable()
@@ -993,6 +1024,7 @@ function M.openFinanceModal()
       local r = tonumber(L.interest or 0) or 0
       return math.floor((dp * (1 + r)) * 100 + 0.5) / 100
     end
+
     for id, L in pairs(activeById) do
       local yRow = (loanPosById[id] or 2) + 1
       loanInfoById[id] = loansF:addLabel()
@@ -1000,6 +1032,7 @@ function M.openFinanceModal()
           :format(dailyCharge(L), tonumber(L.remaining_principal or 0) or 0, L.days_paid or 0, L.days_total or 7))
         :setPosition(2, yRow)
         :setForeground(colors.black)
+
       payoffBtnById[id] = loansF:addButton()
         :setText("Pay Off")
         :setPosition(35, yRow-1)
@@ -1011,30 +1044,118 @@ function M.openFinanceModal()
           local ok, msg = economyAPI.payoffLoan(L.id)
           M.toast(loansF, ok and "Remaining Loan of $"..tonumber(remaining or 0).." Paid in Full." or (msg or "Failed"), 4, 11, ok and colors.green or colors.red, 1.8)
           refreshLoanButtons()
+          refreshButtons()
+          M.refreshBalances()
         end)
     end
   end
 
   refreshLoanButtons()
 
-  -- Stocks tab content
-local stocksF = pages.stocks
-local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
+local bankF = pages.bank
+if bankF and bankF.removeChildren then bankF:removeChildren() end
+bankF:addLabel():setText("---] PixelCity Bank [---")
+      :setPosition(12,1):setForeground(colors.black)
+
+local chkLbl = bankF:addLabel():setPosition(2,3):setText("Checking: $0"):setForeground(colors.black)
+local savLbl = bankF:addLabel():setPosition(2,4):setText("Savings:  $0"):setForeground(colors.black)
+bankF:addLabel():setPosition(2,5)
+      :setText("Interest: 0.30% / day (no loans active)")
+      :setForeground(colors.gray)
+
+function M.refreshBalances()
+  if economyAPI and economyAPI.getBankBalances then
+    local c, s = economyAPI.getBankBalances()
+    chkLbl:setText(("Checking: $%d"):format(c or 0))
+    savLbl:setText(("Savings:  $%d"):format(s or 0))
+  end
+end
+
+
+-- Amount + account selectors
+bankF:addLabel():setText("Amount:"):setPosition(2,7):setForeground(colors.black)
+local amtTF  = bankF:addInput()
+  :setInputType("number"):setPosition(10,7):setSize(8,1):setDefaultText("0")
+
+bankF:addLabel():setText("Account:"):setPosition(20,7):setForeground(colors.black)
+local acctDD = bankF:addDropdown():setPosition(29,7):setSize(12,1)
+acctDD:addItem("Checking"); acctDD:addItem("Savings")
+
+local function amt()  return math.max(0, math.floor(tonumber( (amtTF.getValue and amtTF:getValue()) or "0") or 0)) end
+local function acct() local v = (acctDD.getValue and acctDD:getValue()) or "Checking"; return tostring(v):lower() end
+local function loanActive() return (economyAPI and economyAPI.hasActiveLoan and economyAPI.hasActiveLoan()) or false end
+
+local function selectedAccount()
+  -- Try text first
+  local v = (acctDD.getValue and acctDD:getValue()) or ""
+  if type(v) == "string" and v ~= "" then
+    v = v:lower()
+    if v:find("sav", 1, true) then return "savings" end
+    return "checking"
+  end
+  -- Fallback to index
+  local idx = (acctDD.getItemIndex and acctDD:getItemIndex()) or 1
+  return (idx == 2) and "savings" or "checking"
+end
+
+-- Buttons (we build them once)
+local dBtn = bankF:addButton():setText("Deposit"):setPosition(2,9):setSize(8,1)
+local wBtn = bankF:addButton():setText("Withdraw"):setPosition(12,9):setSize(9,1)
+
+-- Updaters that re-apply visual enable/disable every time the tab is shown
+function refreshButtons()
+  if loanActive() and selectedAccount() == "savings" then
+    -- savings deposit disabled while a loan is active
+    dBtn:setBackground(colors.lightGray):setForeground(colors.white)
+  else
+    dBtn:setBackground(colors.green):setForeground(colors.white)
+  end
+  wBtn:setBackground(colors.red):setForeground(colors.white)
+end
+
+-- Safe handlers (no duplicate binds)
+dBtn:onClick(function()
+  local a = amt()
+  if a <= 0 then return end
+  if selectedAccount() == "savings" and loanActive() then
+    M.toast(bankF, "Savings disabled while loan active", 5, 11, colors.red, 1.6)
+    return
+  end
+  local ok, msg = economyAPI.deposit(a, selectedAccount())   -- checking -> selected acct
+  if selectedAccount() == "savings" then dAct = "savings" else  dAct = "checkings" end
+  M.toast(bankF, ok and ("Deposited $"..a.." to "..dAct) or (msg or "Failed"), ok and 9 or 8, 11, ok and colors.green or colors.red, 1.8)
+  M.refreshBalances(); refreshButtons()
+end)
+
+wBtn:onClick(function()
+  local a = amt()
+  if a <= 0 then return end
+  if selectedAccount() == "savings" then wAct = "savings" else  wAct = "checkings" end
+  local ok, msg = economyAPI.withdraw(a, selectedAccount())  -- selected acct -> checking
+  M.toast(bankF, ok and ("Withdrew $"..a.." from "..wAct) or (msg or "Failed"), ok and 9 or 8, 11, ok and colors.green or colors.red, 1.4)
+  M.refreshBalances(); refreshButtons()
+end)
+
+if acctDD.onChange then acctDD:onChange(function() M.refreshBalances() refreshButtons() end) end
+M.refreshBalances()
+refreshButtons()
+  ----------------------------------------------------------------
+  -- STOCKS TAB (your code kept as-is)
+  ----------------------------------------------------------------
+  local stocksF = pages.stocks
+  local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
   if L < 15 then
     stocksF:addLabel():setText("Level 15 required to unlock stocks"):setPosition(2,2):setForeground(colors.gray)
   else
-    -- Layout
     stocksF:addLabel():setText("Ticker Price ^"):setPosition(2,1):setForeground(colors.gray)
-
     local listFrame = stocksF:addFrame():setPosition(2,2):setSize(14,10):setBackground(colors.white)
     local graphFrame = stocksF:addFrame():setPosition(17,1):setSize(21,7):setBackground(colors.white)
     local ctlFrame   = stocksF:addFrame():setPosition(17,8):setSize(21,4):setBackground(colors.white)
 
-    local tickers = economyAPI.getStocks() 
+    local tickers = economyAPI.getStocks()
     local selected = 1
-
-    -- left list of tickers (buttons)
     local tickerBtns = {}
+
     function M.renderList()
       tickers = economyAPI.getStocks()
       for i,info in ipairs(tickers) do
@@ -1042,7 +1163,6 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
           tickerBtns[i] = listFrame:addButton():setPosition(1, (i-1)*2+1):setSize(12,1)
             :onClick(function() selected = i; M.renderList(); M.renderChart(); M.renderControls() end)
         end
-        -- compute delta vs previous history point
         local snap = economyAPI.getStock(info.sym)
         local h = snap.history or {}
         local prev = (#h >= 2) and h[#h-1] or info.price
@@ -1054,7 +1174,6 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
       end
     end
 
-  -- simple 21x8 dot chart of last 21 points scaled into 7 rows
     local chartDots = {}
     local function clearChart()
       for _,lbl in ipairs(chartDots) do if lbl and lbl.remove then pcall(function() lbl:remove() end) end end
@@ -1078,14 +1197,13 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
       for x=1,#view do
         local v = view[x]
         local t = (v - vmin) / span
-        local y = 1 + (6 - math.floor(t*7 + 0.5))   -- 1..8
+        local y = 1 + (6 - math.floor(t*7 + 0.5))
         chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(x, y):setText("*")
       end
-      local minLbl = string.format("$%.0f", vmin)
-      local maxLbl = string.format("$%.0f", vmax)
-      chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(1, 7):setText(minLbl):setForeground(colors.gray)
-      chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(1, 1):setText(maxLbl):setForeground(colors.gray)
+      chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(1, 7):setText(("$%.0f"):format(vmin)):setForeground(colors.gray)
+      chartDots[#chartDots+1] = graphFrame:addLabel():setPosition(1, 1):setText(("$%.0f"):format(vmax)):setForeground(colors.gray)
     end
+
     local qtyDD, buyBtn, sellBtn, maxBtn, allBtn, holdLbl, priceLbl
     local qty = qty or 1
     local qtyLbl = ctlFrame:addLabel():setPosition(5,2):setText(tostring(qty)):setForeground(colors.black)
@@ -1093,24 +1211,19 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
       for _,c in ipairs({qtyDD,buyBtn,sellBtn,maxBtn,allBtn,holdLbl,priceLbl}) do
         if c and c.remove then pcall(function() c:remove() end) end
       end
-
       local info = tickers[selected]; if not info then return end
       local snap = economyAPI.getStock(info.sym)
       priceLbl = ctlFrame:addLabel():setPosition(1,1)
         :setText(string.format("%s @ $%.0f ", info.sym, info.price)):setForeground(colors.black)
-
       holdLbl = ctlFrame:addLabel():setPosition(13,1)
         :setText(string.format("Hold: %d", snap.qty or 0)):setForeground(colors.gray)
 
-
-
-      local function clamp(n) if n > 1 then return n else n = 1  end return n end
+      local function clamp(n) if n > 1 then return n else n = 1 end return n end
       local function setQty(n) qty = clamp(n); if qtyLbl and qtyLbl.setText then qtyLbl:setText(string.format("%d", qty)):setPosition(5,2) end end
 
       ctlFrame:addButton():setText("<<"):setPosition(2,2):setSize(2,1)
         :setBackground(colors.lightGray):setForeground(colors.black)
         :onClick(function() setQty(qty - 1) end)
-
       ctlFrame:addButton():setText(">>"):setPosition(8,2):setSize(2,1)
         :setBackground(colors.lightGray):setForeground(colors.black)
         :onClick(function() setQty(qty + 1) end)
@@ -1150,11 +1263,13 @@ local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
         end)
     end
 
-  -- initial
     M.renderList(); M.renderChart(); M.renderControls()
   end
 
-  show("loans")
+  -- default shown tab
+  show("bank")
+  M.refreshBalances()
 end
+
 
 return M
