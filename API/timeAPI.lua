@@ -12,6 +12,7 @@ local function getRoot()
 end
 local root = getRoot()
 local saveAPI = require(root.."/API/saveAPI")
+local eventAPI = require(root.."/API/eventAPI")
 
 -- =========================
 -- Defaults / internal state
