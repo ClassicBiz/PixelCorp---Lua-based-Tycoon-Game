@@ -23,6 +23,7 @@ local levelAPI   = require(root.."/API/levelAPI")
 local itemsAPI   = require(root.."/API/itemsAPI")
 local upgradeAPI = require(root.."/API/upgradeAPI")
 local inventoryAPI = require(root.."/API/inventoryAPI")
+local eventAPI = require(root.."/API/eventAPI")
 -- --- State container ---
 M.refs = {
   mainFrame = nil,
@@ -59,6 +60,88 @@ function M.progressToArt(progress)
   elseif progress == "factory"     then return "factory"
   elseif progress == "highrise"    then return "tower"
   else return "base" end
+end
+
+-- === World Interaction Helpers =========================================
+-- ephemeral label that disappears after ttl seconds
+local ActivePickups = { set = {}, count = 0 }
+
+local function _addPickup(lbl)
+  if not lbl then return end
+  if not ActivePickups.set[lbl] then
+    ActivePickups.set[lbl] = true
+    ActivePickups.count = ActivePickups.count + 1
+  end
+end
+
+local function _removePickup(lbl)
+  if not lbl then return end
+  if ActivePickups.set[lbl] then
+    ActivePickups.set[lbl] = nil
+    ActivePickups.count = math.max(0, ActivePickups.count - 1)
+  end
+end
+
+function M.getActivePickups()
+  return ActivePickups.count
+end
+
+
+function M._spawnPickup(parent, x, y, text, fg, ttl, onClick)
+  ttl = ttl or 6
+  local lbl = parent:addLabel()
+      :setPosition(x, y)
+      :setText(text or "*")
+      :setForeground(fg or colors.lime)
+      :setZIndex(130)
+
+  -- track it as active
+  _addPickup(lbl)
+
+  -- click to claim
+  if onClick then
+    lbl:onClick(function()
+      pcall(onClick)
+      _removePickup(lbl)
+      pcall(function() lbl:hide(); lbl:remove() end)
+    end)
+  end
+
+  -- auto fade (simple blink then remove)
+  local th = parent:addThread()
+  th:start(function()
+    local t = 0
+    while t < ttl do
+      os.sleep(0.25); t = t + 0.25
+      if lbl and lbl.setForeground then
+        lbl:setForeground((t % 0.5 < 0.25) and fg or colors.white)
+      end
+    end
+    _removePickup(lbl)
+    pcall(function() lbl:hide(); lbl:remove() end)
+  end)
+
+  return lbl
+end
+
+-- very light customer “walk-up” animation (1 char that moves, then poof)
+function M.spawnCustomer(parent)
+  local W,H = term.getSize()
+  local y = H - 3
+  local lbl = parent:addLabel():setPosition(W-2, y):setText("@"):setForeground(colors.gray):setZIndex(120)
+  local th  = parent:addThread()
+  th:start(function()
+    local x = W-2
+    while x > 8 do
+      x = x - 1
+      if lbl and lbl.setPosition then lbl:setPosition(x, y) end
+      os.sleep(0.05)
+    end
+    -- little sparkle when they “buy”
+    if lbl and lbl.setText then lbl:setText("*"):setForeground(colors.yellow) end
+    os.sleep(0.15)
+    pcall(function() lbl:hide(); lbl:remove() end)
+  end)
 end
 
 -- --- Toast manager (re-usable, single runner) ---
@@ -159,11 +242,13 @@ function M.refreshDevLicenses()
     btn = ("Buy %s License"):format(L.name or id)
   end
 
-  DEV.licInfo:setText(txt)
+  DEV.licInfo:setText(txt):setPosition(10,4)
   DEV.licBtn
     :setText(btn)
     :setBackground(enabled and colors.blue or colors.lightGray)
     :setForeground(enabled and colors.white or colors.gray)
+    :setPosition(10,6)
+    :setSize(34,3)
   if not DEV._licBound then
     DEV._licBound = true
     DEV.licBtn:onClick(function()
@@ -205,15 +290,17 @@ function M.refreshDevStage()
     local hasLic = (needLic == "") or licenseAPI.has(needLic)
     enabled = hasLic and (lvl >= needLvl) and economyAPI.canAfford(cost)
 
-    info = ("Next Stage:\n  %s\n  Req: Lvl %d%s\n  Cost: %s")
+    info = ("Next Stage:\n  %s  Req: Lvl %d%s\n  Cost: %s")
            :format(nextDef.name or nextKey, needLvl, (needLic~="" and (", License: "..needLic) or ""), _fmtMoney(cost))
     btn  = ("Unlock %s"):format(nextDef.name or nextKey)
   else
     info, btn, enabled = "Next Stage:\n  Max stage reached.", "Done", false
   end
-  DEV.stgInfo:setText(info)
+  DEV.stgInfo:setText(info):setPosition(10,12)
   DEV.stgBtn
     :setText(btn)
+    :setPosition(10,14)
+    :setSize(34,3)
     :setBackground(enabled and colors.blue or colors.lightGray)
     :setForeground(enabled and colors.white or colors.gray)
   if not DEV._stgBound then
@@ -814,6 +901,24 @@ function M.setHUDMoney(text)     if M.refs.labels and M.refs.labels.moneyLabel t
 function M.setHUDStage(text)     if M.refs.labels and M.refs.labels.stageLabel then M.refs.labels.stageLabel:setText(text) end end
 function M.setHUDLevel(text)     if M.refs.labels and M.refs.labels.levelLabel then M.refs.labels.levelLabel:setText(text) end end
 function M.setHUDLevelBar(text)  if M.refs.labels and M.refs.labels.levelBarLabel then M.refs.labels.levelBarLabel:setText(text) end end
+
+local _moneyHud = { text = "Money: $0" }
+
+function M.setHUDMoney(text)
+  if M.refs.labels and M.refs.labels.moneyLabel then
+    M.refs.labels.moneyLabel:setText(text)
+  end
+  _moneyHud.text = tostring(text or "")
+end
+
+function M.getMoneyTail()
+  local lbl = M.refs.labels and M.refs.labels.moneyLabel
+  if not lbl then return 1, 1 end
+  local x0, y0 = 1, 1
+  if lbl.getPosition then x0, y0 = lbl:getPosition() end
+  local tailX = x0 + #_moneyHud.text
+  return tailX, y0
+end
 
 function M.getFrame(name)
   if not name then return M.refs.mainFrame end
