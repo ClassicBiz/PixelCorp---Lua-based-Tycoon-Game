@@ -11,23 +11,29 @@ local function getRoot()
     return fullPath
 end
 local root = getRoot()
-local saveAPI = require(root.."/API/saveAPI")
+local saveAPI      = require(root.."/API/saveAPI")
+local settingsOK, settingsAPI = pcall(require, root.."/API/settingsAPI")
 
-local PRICES = {
-  lemons = { min = 2, max = 4 },
-  sugar  = { min = 1, max = 3 },
-  cups   = { min = 1, max = 2 },
-  ice    = { min = 1, max = 2 }
-}
-
+-- Example market (kept simple)
+local PRICES = { lemons={min=2,max=4}, sugar={min=1,max=3}, cups={min=1,max=2}, ice={min=1,max=2} }
 local productPrices = {}
+
+-- Difficulty-biased random sampler
+local function _biased(minv, maxv)
+  local r = math.random()
+  local bias = (settingsAPI.stockBias and settingsAPI.stockBias()) or 0
+  if bias == "low"  then r = r*r           -- weights toward 0 -> lower prices
+  elseif bias == "high" then r = 1 - (r*r) -- weights toward 1 -> higher prices
+  end
+  return math.floor( minv + (maxv - minv) * r + 0.5 )
+end
 
 local function reseedPrices()
   local seed = math.floor(os.epoch("utc") / (1000 * 60 * 60 * 24 * 7))
   math.randomseed(seed)
   local p = {}
   for item, range in pairs(PRICES) do
-    p[item] = math.random(range.min, range.max)
+    p[item] = _biased(range.min, range.max)
   end
   return p
 end
@@ -68,30 +74,16 @@ function economyAPI.reseedWeekly()
   saveAPI.setState(s)
 end
 
-function economyAPI.getMoney()
-  return saveAPI.getPlayerMoney()
-end
-
-function economyAPI.addMoney(amount, reason)
-  local current = saveAPI.getPlayerMoney()
-  saveAPI.setPlayerMoney(current + (amount or 0))
-end
-
-function economyAPI.spendMoney(amount, reason)
+function economyAPI.getMoney() return saveAPI.getPlayerMoney() end
+function economyAPI.addMoney(amount) saveAPI.setPlayerMoney(saveAPI.getPlayerMoney() + (amount or 0)) end
+function economyAPI.spendMoney(amount)
   amount = tonumber(amount) or 0
   local current = saveAPI.getPlayerMoney()
   if current < amount then return false, "Not enough funds." end
-  saveAPI.setPlayerMoney(current - amount)
-  return true
+  saveAPI.setPlayerMoney(current - amount); return true
 end
-
-function economyAPI.getBalance()
-  return saveAPI.getPlayerMoney()
-end
-
-function economyAPI.canAfford(amount)
-  return saveAPI.getPlayerMoney() >= (tonumber(amount) or 0)
-end
+function economyAPI.getBalance() return saveAPI.getPlayerMoney() end
+function economyAPI.canAfford(amount) return saveAPI.getPlayerMoney() >= (tonumber(amount) or 0) end
 
 -- ===== Loans =====
 local function _ensureFinance()
@@ -99,19 +91,12 @@ local function _ensureFinance()
   s.finance = s.finance or {}
   s.finance.loans = s.finance.loans or { active = {} }
   local act = s.finance.loans.active or {}
-  local keep
-  for i = #act, 1, -1 do
-    local L = act[i]
-    if (tonumber(L.remaining_principal or 0) or 0) > 0 then keep = L; break end
-  end
+  local keep; for i = #act, 1, -1 do local L = act[i]; if (tonumber(L.remaining_principal or 0) or 0) > 0 then keep = L; break end end
   keep = keep or act[#act]
   if keep then s.finance.loans.active = { keep } else s.finance.loans.active = {} end
-
-  saveAPI.setState(s)
-  return s.finance.loans
+  saveAPI.setState(s); return s.finance.loans
 end
 
--- Create loan
 function economyAPI.createLoan(params)
   params = params or {}
   local loans = _ensureFinance()
@@ -129,6 +114,12 @@ function economyAPI.createLoan(params)
   local dailyPrincipal = ceil2(principal / days)
   if dailyPrincipal <= 0 then dailyPrincipal = 0.01 end
 
+  local rate = tonumber(params.interest or 0)
+  if not rate and settingsOK and settingsAPI.loanInterest then
+    rate = settingsAPI.loanInterest()
+  end
+  if not rate then rate = 0.20 end
+
   local loan = {
     id = tostring(params.id or ("LN"..tostring(os.epoch("utc")%100000))),
     name = params.name or "Loan",
@@ -136,9 +127,8 @@ function economyAPI.createLoan(params)
     remaining_principal = principal,
     baseDaily = dailyPrincipal,
     dailyPrincipal = dailyPrincipal,
-    interest = tonumber(params.interest or 0) or 0.0,
-    days_total = days,
-    days_paid = 0,
+    interest = rate,
+    days_total = days, days_paid = 0,
     started_on = (function()
       local t = saveAPI.get().time or {year=1,month=1,day=1}
       return { year=t.year, month=t.month, day=t.day }
@@ -154,65 +144,45 @@ function economyAPI.createLoan(params)
 end
 
 function economyAPI.hasActiveLoan()
-  if not (economyAPI and economyAPI.listLoans) then return false end
   for _, L in ipairs(economyAPI.listLoans()) do
     if (L.remaining_principal or 0) > 0 then return true end
   end
   return false
 end
-
-function economyAPI.listLoans()
-  local loans = _ensureFinance()
-  return loans.active
-end
-
-function economyAPI.getLoanById(id)
-  for _, L in ipairs(economyAPI.listLoans()) do if L.id == id then return L end end
-  return nil
-end
+function economyAPI.listLoans() return _ensureFinance().active end
+function economyAPI.getLoanById(id) for _,L in ipairs(economyAPI.listLoans()) do if L.id == id then return L end end end
 
 function economyAPI.processDailyLoans()
   local loans = _ensureFinance()
   local paid_any = false
-
   for _, L in ipairs(loans.active) do
     local rem = tonumber(L.remaining_principal or 0) or 0
     if rem > 0 and (L.days_paid or 0) < (L.days_total or 7) then
       local dp = tonumber(L.dailyPrincipal or L.baseDaily or 0) or 0
-      if dp <= 0 then
-        dp = ceil2((tonumber(L.principal or 0) or 0) / (tonumber(L.days_total or 7) or 7))
-        L.dailyPrincipal, L.baseDaily = dp, dp
-      end
+      if dp <= 0 then dp = ceil2((tonumber(L.principal or 0) or 0) / (tonumber(L.days_total or 7) or 7)); L.dailyPrincipal = dp; L.baseDaily = dp end
       local slice  = math.min(dp, rem)
       local rate   = tonumber(L.interest or 0) or 0
       local charge = round2(slice * (1 + rate))
-
       if charge > 0 and economyAPI.canAfford(charge) then
         economyAPI.spendMoney(charge, "Loan daily payment")
-        L.remaining_principal = round2(rem - slice)
-        if L.remaining_principal < 0 then L.remaining_principal = 0 end
-        L.days_paid = (L.days_paid or 0) + 1
-        paid_any = true
+        L.remaining_principal = round2(rem - slice); if L.remaining_principal < 0 then L.remaining_principal = 0 end
+        L.days_paid = (L.days_paid or 0) + 1; paid_any = true
       end
     end
   end
-
   if paid_any then saveAPI.save() end
   return paid_any
 end
 
 function economyAPI.payoffLoan(loanId)
   local loans = _ensureFinance()
-  for i, L in ipairs(loans.active) do
+  for _, L in ipairs(loans.active) do
     if L.id == loanId then
       local due = tonumber(L.remaining_principal or 0) or 0
       if due <= 0 then return false, "Already paid" end
       if not economyAPI.canAfford(due) then return false, "Not enough funds" end
       economyAPI.spendMoney(due, "Loan payoff")
-      L.remaining_principal = 0
-      L.days_paid = L.days_total
-      saveAPI.save()
-      return true, "Loan paid"
+      L.remaining_principal = 0; L.days_paid = L.days_total; saveAPI.save(); return true, "Loan paid"
     end
   end
   return false, "Loan not found"
@@ -221,11 +191,8 @@ end
 function economyAPI.cleanupLoans()
   local loans = _ensureFinance()
   local keep = {}
-  for _, L in ipairs(loans.active) do
-    if (tonumber(L.remaining_principal or 0) or 0) > 0 then table.insert(keep, L) end
-  end
-  loans.active = keep
-  if #loans.active > 1 then loans.active = { loans.active[#loans.active] } end
+  for _, L in ipairs(loans.active) do if (tonumber(L.remaining_principal or 0) or 0) > 0 then table.insert(keep, L) end end
+  loans.active = keep; if #loans.active > 1 then loans.active = { loans.active[#loans.active] } end
   saveAPI.save()
 end
 
@@ -419,10 +386,13 @@ function economyAPI.sellAll(sym)
 return economyAPI.sellStock(sym, have)
 end
 
+-- ===== Bank =====
 local function _ensureBank()
   local s = saveAPI.get()
   s.finance = s.finance or {}
-  s.finance.bank = s.finance.bank or { savings = 0, last_interest_day = 0, interest_rate_daily = 0.003 }
+  local daily = (settingsAPI.bankDailyRate and settingsAPI.bankDailyRate()) or 0.003
+  s.finance.bank = s.finance.bank or { savings = 0, last_interest_day = 0, interest_rate_daily = daily }
+  s.finance.bank.interest_rate_daily = daily
   return s.finance.bank, s
 end
 
@@ -434,18 +404,13 @@ local function _bankDayIndex(t)
   return y*360 + (m-1)*30 + (d-1)
 end
 
--- Accrue savings interest once per in-game day; disabled while any loan is active
 function economyAPI.accrueSavingsInterest()
   local B, s = _ensureBank()
   local nowIdx = _bankDayIndex(s.time)
   if (B.last_interest_day or 0) == nowIdx then return false end
 
   local activeLoan = false
-  if economyAPI.listLoans then
-    for _,L in ipairs(economyAPI.listLoans()) do
-      if (L.remaining_principal or 0) > 0 then activeLoan = true; break end
-    end
-  end
+  for _,L in ipairs(economyAPI.listLoans()) do if (L.remaining_principal or 0) > 0 then activeLoan = true; break end end
 
   if not activeLoan then
     local r = tonumber(B.interest_rate_daily or 0.0) or 0.0
@@ -455,21 +420,8 @@ function economyAPI.accrueSavingsInterest()
     end
   end
 
-  B.last_interest_day = nowIdx
-  saveAPI.save()
-  return true
+  B.last_interest_day = nowIdx; saveAPI.save(); return true
 end
-
-local function S()
-  local s = saveAPI.get()
-  s.economy = s.economy or {}
-  s.economy.bank = s.economy.bank or { savings = 0 }
-  s.economy.loans = s.economy.loans or {}
-  return s
-end
-
-local function setS(s) saveAPI.setState(s) end
-local function clampAmt(n) n = math.floor(tonumber(n or 0) or 0); if n < 0 then n = 0 end; return n end
 
 function economyAPI.getBankBalances()
   local s = saveAPI.get()
@@ -527,26 +479,6 @@ function economyAPI.withdraw(n, account)
     if economyAPI.hasActiveLoan() then return false, "Disabled while is loan active" end
     if saveAPI.getPlayerMoney() < n then return false, "    Insufficient checking" end
     _addChecking(-n); _addSavings(n); return true
-  end
-end
-
--- Transfer: selected account receives
-function economyAPI.transfer(n, src, dest)
-  n = _clamp(n); if n <= 0 then return false, "Amount?" end
-  src  = _acct(src)
-  dest = _acct(dest)
-  if src == dest then return false, "Same account" end
-  if dest == "savings" and economyAPI.hasActiveLoan() then
-    return false, "Transfers to savings disabled while loan active"
-  end
-  if src == "checking" and dest == "savings" then
-    return economyAPI.deposit(n, "savings")
-  elseif src == "savings" and dest == "checking" then
-    return economyAPI.withdraw(n, "savings")
-  else
-    -- Fallback (shouldn’t happen with _acct): route via explicit ops
-    if dest == "savings" then return economyAPI.deposit(n, "savings") end
-    return economyAPI.withdraw(n, "savings")
   end
 end
 
