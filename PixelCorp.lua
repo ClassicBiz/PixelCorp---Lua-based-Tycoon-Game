@@ -127,10 +127,12 @@ local function stopUIAndRun(fn)
   end
 end
 
+  local main = basalt.createFrame():setSize(SCREEN_WIDTH, SCREEN_HEIGHT):setPosition(1, 1)
+
 -- =======================
 -- Settings Modal (Main)
 -- =======================
-local version = "0.1.99.1"
+local version = "0.2.0.3"
 local function openSettingsModal(parent)
   local W,H = term.getSize()
   local border = parent:addFrame():setSize(49,17):setPosition(2,2)
@@ -206,7 +208,7 @@ local function openSettingsModal(parent)
       s.general.navigation = _read(ddNav)  or "sidebar"
       s.general.tutorial   = ((_read(ddTut)  or "on")  == "on")
       s.general.autosave   = ((_read(ddAuto) or "off") == "on")
-      uiAPI.toast(f,"Settings Saved",15,14,colors.green,1.2)
+      uiAPI.toast(gen,"Settings Saved",15,10,colors.green,1.2)
       settingsAPI.save(s)  -- <- writes /config/.settings
     end)
 
@@ -295,8 +297,37 @@ local function openSettingsModal(parent)
   showPage("general")
 end
 
+  local function pickDifficultyThen(startFn)
+      local W,H = term.getSize()
+      local border = main:addFrame():setSize(31,7):setPosition(math.floor((W-31)/2), math.floor((H-7)/2))
+          :setBackground(colors.lightGray):setZIndex(50)
+      local f = border:addFrame():setSize(29,5):setPosition(2,2):setBackground(colors.white)
+      f:addLabel():setText("Select Difficulty"):setPosition(9,1):setForeground(colors.gray)
+      local dd = f:addDropdown():setPosition(3,3):setSize(14,1); dd:addItem("easy"); dd:addItem("medium"); dd:addItem("hard")
+      -- preselect current
+      local cur = settingsAPI.get({"general","difficulty"}, "medium")
+      for i=1, dd:getItemCount() do local it=dd:getItem(i); local t=(type(it)=="table" and it.text) or it if t==cur then dd:selectItem(i) break end end
+      f:addButton():setText("OK"):setPosition(20,3):setSize(6,1):setBackground(colors.green):setForeground(colors.white)
+        :onClick(function()
+          local v = dd:getValue()
+          local val
+          if type(v) == "table" and v.text then
+            val = v.text
+          elseif type(v) == "number" and dd.getItem then
+            local it = dd:getItem(v)
+            val = (type(it) == "table" and it.text) or tostring(it)
+          else
+            val = tostring(v)
+          end
+          if val == "" or not val then val = "medium" end
+          settingsAPI.set({"general","difficulty"}, val)
+          border:remove()
+          startFn()
+        end)
+    end
+
 local function loadMainMenu()
-  local main = basalt.createFrame():setSize(SCREEN_WIDTH, SCREEN_HEIGHT):setPosition(1, 1)
+
 
   local bgFrame = main:addFrame()
     :setSize(SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -324,16 +355,20 @@ local function loadMainMenu()
     end)
   end
 
-  addMenuButton("[ New Game ]", 10, colors.gray, colors.green, function()
-    local slot = settingsAPI.get({"profile","last_loaded"}, "profile1")
-    _archiveProfileAndClearActive(slot)
-    saveAPI.setProfile(slot)
-    saveAPI.newGame()
-    economyAPI.addMoney(350, "fresh start")
-    saveAPI.commit(slot)
-    if timeAPI and timeAPI.loadFromSave then timeAPI.loadFromSave() end
-    bootGame()
-  end)
+    addMenuButton("[ New Game ]", 10, colors.gray, colors.green, function()
+      pickDifficultyThen(function()
+        local slot = settingsAPI.get({"profile","last_loaded"}, "profile1")
+        _archiveProfileAndClearActive(slot)
+        saveAPI.setProfile(slot)
+        saveAPI.newGame()
+        local d = settingsAPI.get({"general","difficulty"}, "medium")
+        local startCash = (d == "easy" and 450) or (d == "hard" and 250) or 350
+        economyAPI.addMoney(startCash, "fresh start ("..d..")")
+        saveAPI.commit(slot)
+        if timeAPI and timeAPI.loadFromSave then timeAPI.loadFromSave() end
+        bootGame()
+      end)
+    end)
 
   addMenuButton("[ Continue ]", 12, colors.gray, colors.orange, function()
     local slot = settingsAPI.get({"profile","last_loaded"}, "profile1")
@@ -475,15 +510,6 @@ local function loadMainMenu()
 end
 
 loadMainMenu()
-
-
-
-
-
-
-
-
-
 
 
 
