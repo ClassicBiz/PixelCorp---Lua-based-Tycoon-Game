@@ -17,6 +17,7 @@ local root = getRoot()
 local saveAPI   = require(root.."/API/saveAPI")
 local stageAPI  = require(root.."/API/stageAPI")
 local upgradeAPI = require(root.."/API/upgradeAPI")
+local settingsOK, settingsAPI = pcall(require, root.."/API/settingsAPI")
 
 local levelAPI = {}
 
@@ -60,11 +61,15 @@ local ITEM_UNLOCKS = {
 -- XP curve: XP required to advance from level L to L+1.
 -- Smoothly increases; tweakable. Approximately 100 -> 2k over the range.
 local function xp_to_next(level)
-  if level < 10 then return 60 + 6*level end
-  if level < 50 then return 120 + math.floor(8.5 * level) end
-  if level < 100 then return 500 + math.floor(9.5 * level) end
-  if level < 175 then return 1100 + math.floor(11 * level) end
-  return 2000 + math.floor(12.5 * level)
+  local m = (settingsAPI.xpCurveMult and settingsAPI.xpCurveMult()) or 1.0
+  local v
+  if level < 10  then v = 60 + 6*level
+  elseif level < 50  then v = 120 + math.floor(8.5 * level)
+  elseif level < 100 then v = 500 + math.floor(9.5 * level)
+  elseif level < 175 then v = 1100 + math.floor(11 * level)
+  else                  v = 2000 + math.floor(12.5 * level)
+  end
+  return math.max(1, math.floor(v * m + 0.5))
 end
 
 -- Initialize save structure
