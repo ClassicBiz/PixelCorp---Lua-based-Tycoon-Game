@@ -38,6 +38,7 @@ local craftAPI     = require(root.."/API/craftAPI")
 local tutorialAPI  = require(root.."/API/tutorialAPI")
 local guideAPI     = require(root.."/API/guideAPI")
 local guideData    = require(root.."/API/guideData")
+local eventAPI = require(root.."/API/eventAPI") 
 
 -- Seed RNG safely
 pcall(function() math.randomseed(os.epoch("utc") % 2^31); for i=1,3 do math.random() end end)
@@ -253,6 +254,100 @@ local function populateAll()
     _mkRow(tab,y,_safeText(("["..tag.."] "..shown),26), it.qty, it.base or price, it.color); y=y+1
   end
 end
+
+-- Map friendly names → actual item ids (fallbacks if not found)
+local function _id(name) return (itemsAPI.idByName and itemsAPI.idByName(name)) or name end
+
+local LOOT = {
+  bush   = { pool = {"Cherry","Berry"},    qty = function() return math.random(1,8) end,  icon="*", color=colors.purple   },
+  tree   = { pool = {"Lemon","Mango"},     qty = function() return math.random(1,4) end,  icon="*", color=colors.lime  },
+  ground = { cash = true,                   amt = function() return math.random(5,50) end, icon="$", color=colors.yellow},
+}
+
+local function _safeGiveItems(names, count)
+  for i,name in ipairs(names or {}) do
+    local id = _id(name)
+    if id then inventoryAPI.add(id, count) end  -- inventoryAPI.add exists and saves :contentReference[oaicite:2]{index=2}
+  end
+end
+
+local function spawnBush(x, y)
+  uiAPI._spawnPickup(displayFrame, x, y, LOOT.bush.icon, LOOT.bush.color, 8, function()
+    local n = LOOT.bush.qty()
+    -- choose one fruit from pool
+    local which = LOOT.bush.pool[math.random(1, #LOOT.bush.pool)]
+    _safeGiveItems({which}, n)
+    uiAPI.toast("displayFrame", ("Picked +"..n.." "..which), 15, 17, colors.yellow, 1.6)
+  end)
+end
+
+local function spawnTreeFruit(x, y)
+  uiAPI._spawnPickup(displayFrame, x, y, LOOT.tree.icon, LOOT.tree.color, 8, function()
+    local n = LOOT.tree.qty()
+    local which = LOOT.tree.pool[math.random(1, #LOOT.tree.pool)]
+    _safeGiveItems({which}, n)
+    uiAPI.toast("displayFrame", ("Shook +"..n.." "..which), 15, 17, colors.yellow, 1.6)
+  end)
+end
+
+local function spawnGroundCash(x, y)
+  uiAPI._spawnPickup(displayFrame, x, y, LOOT.ground.icon, LOOT.ground.color, 6, function()
+    local amt = LOOT.ground.amt()
+    if economyAPI and economyAPI.addMoney then economyAPI.addMoney(amt, "Found cash") end
+    uiAPI.toast("displayFrame", ("Found $"..amt), 20, 17, colors.yellow, 1.5)
+    uiAPI.refreshBalances()
+  end)
+end
+local SpawnCtrl = {
+  max_active = 3,   -- never show more than 3 pickups on screen
+  cooldown   = 60,   -- minutes remaining before another spawn is allowed
+  charge     = 0,   -- increases each minute w/out a spawn (ramps probability)
+}
+
+local function trySpawnWorldPickup(t)
+  local hour = t.hour or 0
+
+  -- only daytime
+  local daylight = (hour >= 7 and hour <= 20)
+  if not daylight then return end
+
+  -- enforce on-screen cap
+  local active = (uiAPI.getActivePickups and uiAPI.getActivePickups()) or 0
+  if active >= SpawnCtrl.max_active then
+    return
+  end
+
+  -- hard cooldown (in in-game minutes) after any successful spawn
+  if SpawnCtrl.cooldown > 0 then
+    SpawnCtrl.cooldown = SpawnCtrl.cooldown - 1
+    return
+  end
+
+  local base   = 0.002    -- 0.4% baseline per minute
+  local chance = base * (1 + SpawnCtrl.charge * 0.2)
+
+  if math.random() < chance then
+    -- Choose a spawn type uniformly to keep it varied
+    local r = math.random()
+    if r < 0.34 then
+      spawnBush(8 + math.random(0, 40), math.random(13, 17))
+    elseif r < 0.67 then
+      spawnTreeFruit(math.random(29, 33), math.random(9, 11))
+    else
+      spawnGroundCash(1 + math.random(1, 48), math.random(13, 17))
+    end
+
+    -- reset ramp and start a new cooldown window (8–16 in-game minutes)
+    SpawnCtrl.charge   = 0
+    SpawnCtrl.cooldown = math.random(8, 16)  -- space spawns further apart
+  else
+    -- no spawn this minute; slightly increase the ramp (soft "decay" to fewer spawns)
+    SpawnCtrl.charge = math.min(20, SpawnCtrl.charge + 1)
+  end
+end
+
+-- Fire this every minute via eventAPI’s global listeners
+eventAPI.onGlobal(function(t) trySpawnWorldPickup(t) end)
 
 -- ========
 -- Crafting
@@ -780,7 +875,8 @@ local function trySellOnce()
     inventoryAPI.add(pick.key, -1)
     if economyAPI and economyAPI.addMoney then economyAPI.addMoney(price, "Product sale: "..pick.label) end
     local xpGrant = 0; pcall(function() local stageKey = (stageAPI and stageAPI.getStage and stageAPI.getStage()) or "lemonade"; local g = (levelAPI.onSale and select(1, levelAPI.onSale(pick.key, nil, stageKey))) or 0; xpGrant = g or 0 end)
-    uiAPI.toast("topbar", ("+$%d"):format(price), 36,2, colors.green,1.7)
+    local tx, ty = uiAPI.getMoneyTail()
+    uiAPI.toast("topbar", ("+$%d"):format(price), tx, 2, colors.green, 1.7)
     uiAPI.toast("topbar", ("+%d xp"):format(math.floor(xpGrant+0.5)), 10,3, colors.green,1.7)
     uiAPI.toast("displayFrame", ("Sold 1x %s"):format(pick.label), 9,18, colors.yellow,1.7)
     uiAPI.refreshBalances()
@@ -874,7 +970,7 @@ function refreshUI()
   -- Money/Stage HUD
   local state = saveAPI.get()
   local currentStageName = ({ odd_jobs="Odd Jobs", lemonade_stand="Lemonade Stand", warehouse="Warehouse Services", factory="Factory", highrise="High-Rise Corporation" })[state.player.progress] or "Odd Jobs"
-  uiAPI.setHUDMoney("Money: $" .. (state.player.money or 0))
+  uiAPI.setHUDMoney("Money:$" .. (state.player.money or 0))
   uiAPI.setHUDStage("Stage: " .. currentStageName)
 
   -- Keep background in sync with progress (also on Dev page)
@@ -926,7 +1022,7 @@ local function initialize()
       os.sleep(0.7)
       uiAPI.showRoot()
       uiAPI.hideLoading()
-
+      timeAPI.onTick(function(t) eventAPI.onTick(t) end)
       -- Kick off tutorial after UI is visible
 
       -- Default page
