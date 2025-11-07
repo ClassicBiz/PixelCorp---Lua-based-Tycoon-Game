@@ -130,7 +130,7 @@ end
 -- =======================
 -- Settings Modal (Main)
 -- =======================
-local version = "0.1.97.3"
+local version = "0.1.98.6"
 local function openSettingsModal(parent)
   local W,H = term.getSize()
   local border = parent:addFrame():setSize(49,17):setPosition(2,2)
@@ -475,6 +475,7 @@ local function loadMainMenu()
 end
 
 loadMainMenu()
+
 
 
 
