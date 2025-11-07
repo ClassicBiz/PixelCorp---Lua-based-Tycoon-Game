@@ -1018,9 +1018,9 @@ function M.openFinanceModal()
 
   -- Tabs now include Bank
   local tabs = box:addMenubar()
-      :setPosition(4,2):setSize(32,1)
+      :setPosition(6,2):setSize(33,1)
       :setScrollable(false)
-      :addItem("Bank"):addItem("Loans"):addItem("Stocks")
+      :addItem("- Bank -"):addItem("= Loans ="):addItem("- Stocks -")
 
   -- Pages
   local pages = {
@@ -1248,9 +1248,9 @@ refreshButtons()
   -- STOCKS TAB (your code kept as-is)
   ----------------------------------------------------------------
   local stocksF = pages.stocks
-  local L = (levelAPI and levelAPI.getLevel and levelAPI.getLevel()) or 1
-  if L < 15 then
-    stocksF:addLabel():setText("Level 15 required to unlock stocks"):setPosition(2,2):setForeground(colors.gray)
+  local curStage = (stageAPI and stageAPI.getStage and stageAPI.getStage()) or "base"
+  if curStage ~= "tower" then
+    stocksF:addLabel():setText("High-Rise stage required to unlock \n          stock market"):setPosition(5,2):setForeground(colors.gray)
   else
     stocksF:addLabel():setText("Ticker Price ^"):setPosition(2,1):setForeground(colors.gray)
     local listFrame = stocksF:addFrame():setPosition(2,2):setSize(14,10):setBackground(colors.white)
