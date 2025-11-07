@@ -128,7 +128,7 @@ end
 function M.spawnCustomer(parent)
   local W,H = term.getSize()
   local y = H - 3
-  local lbl = parent:addLabel():setPosition(W-2, y):setText("@"):setForeground(colors.gray):setZIndex(120)
+  local lbl = parent:addLabel():setPosition(W-2, y):setText("@"):setForeground(colors.gray):setZIndex(8)
   local th  = parent:addThread()
   th:start(function()
     local x = W-2
@@ -198,7 +198,7 @@ function M.spawnToast(parent, text, x, y, color, duration)
       :setSize(#txt, 1)
       :setText(txt)
       :setForeground(color or colors.white)
-      :setZIndex(200)
+      :setZIndex(8)
 
   table.insert(TextToasts.items, { lbl = lbl, t1 = os.clock() + (tonumber(duration) or 2.0) })
   return lbl
