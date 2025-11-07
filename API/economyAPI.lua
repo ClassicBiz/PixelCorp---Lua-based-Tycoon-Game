@@ -154,9 +154,9 @@ function economyAPI.createLoan(params)
 end
 
 function economyAPI.hasActiveLoan()
-  local loans = _ensureFinance()
-  for _, L in ipairs(loans.active) do
-    if (tonumber(L.remaining_principal or 0) or 0) > 0 then return true end
+  if not (economyAPI and economyAPI.listLoans) then return false end
+  for _, L in ipairs(economyAPI.listLoans()) do
+    if (L.remaining_principal or 0) > 0 then return true end
   end
   return false
 end
@@ -397,7 +397,7 @@ function economyAPI.buyMax(sym)
   local cash = economyAPI.getMoney()
   local qty  = math.floor(cash / price)
   if qty <= 0 then return false, "Insufficient funds" end
-  return economyAPI.buyStock(sym, qty)
+return economyAPI.buyStock(sym, qty)
 end
 
 function economyAPI.sellStock(sym, qty)
@@ -416,7 +416,141 @@ function economyAPI.sellAll(sym)
   local M = _ensureStocks(); sym = tostring(sym)
   local have = M.holdings[sym] or 0
   if have <= 0 then return false, "No shares" end
-  return economyAPI.sellStock(sym, have)
+return economyAPI.sellStock(sym, have)
 end
+
+local function _ensureBank()
+  local s = saveAPI.get()
+  s.finance = s.finance or {}
+  s.finance.bank = s.finance.bank or { savings = 0, last_interest_day = 0, interest_rate_daily = 0.003 }
+  return s.finance.bank, s
+end
+
+local function _bankDayIndex(t)
+  if not t then return 0 end
+  local y = tonumber(t.year or 0) or 0
+  local m = tonumber(t.month or 1) or 1
+  local d = tonumber(t.day or 1) or 1
+  return y*360 + (m-1)*30 + (d-1)
+end
+
+-- Accrue savings interest once per in-game day; disabled while any loan is active
+function economyAPI.accrueSavingsInterest()
+  local B, s = _ensureBank()
+  local nowIdx = _bankDayIndex(s.time)
+  if (B.last_interest_day or 0) == nowIdx then return false end
+
+  local activeLoan = false
+  if economyAPI.listLoans then
+    for _,L in ipairs(economyAPI.listLoans()) do
+      if (L.remaining_principal or 0) > 0 then activeLoan = true; break end
+    end
+  end
+
+  if not activeLoan then
+    local r = tonumber(B.interest_rate_daily or 0.0) or 0.0
+    if r > 0 and (B.savings or 0) > 0 then
+      local add = math.floor((B.savings * r) + 0.5)
+      if add > 0 then B.savings = B.savings + add end
+    end
+  end
+
+  B.last_interest_day = nowIdx
+  saveAPI.save()
+  return true
+end
+
+local function S()
+  local s = saveAPI.get()
+  s.economy = s.economy or {}
+  s.economy.bank = s.economy.bank or { savings = 0 }
+  s.economy.loans = s.economy.loans or {}
+  return s
+end
+
+local function setS(s) saveAPI.setState(s) end
+local function clampAmt(n) n = math.floor(tonumber(n or 0) or 0); if n < 0 then n = 0 end; return n end
+
+function economyAPI.getBankBalances()
+  local s = saveAPI.get()
+  s.economy = s.economy or {}
+  s.economy.bank = s.economy.bank or { savings = 0 }
+  return saveAPI.getPlayerMoney(), tonumber(s.economy.bank.savings or 0) or 0
+end
+
+local function _addChecking(delta)
+  saveAPI.setPlayerMoney(saveAPI.getPlayerMoney() + (tonumber(delta) or 0))
+end
+local function _addSavings(delta)
+  local s = saveAPI.get()
+  s.economy = s.economy or {}
+  s.economy.bank = s.economy.bank or { savings = 0 }
+  s.economy.bank.savings = (tonumber(s.economy.bank.savings or 0) or 0) + (tonumber(delta) or 0)
+  saveAPI.setState(s)
+end
+
+local function _clamp(n) n = math.floor(tonumber(n or 0) or 0); if n < 0 then n = 0 end; return n end
+
+local function _acct(a)
+  a = tostring(a or ""):lower()
+  if a:find("sav", 1, true) then return "savings" end
+  return "checking"
+end
+
+-- Deposit: checking -> selected
+function economyAPI.deposit(n, account)
+  n = _clamp(n); if n <= 0 then return false, "Amount?" end
+  local acct = _acct(account)
+  if acct == "savings" then
+    if economyAPI.hasActiveLoan() then return false, "Disabled while is loan active" end
+    if saveAPI.getPlayerMoney() < n then return false, "    Insufficient checking" end
+    _addChecking(-n); _addSavings(n); return true
+  elseif acct == "checking" then
+    -- move from savings -> checking
+    local _, sav = economyAPI.getBankBalances()
+    if sav < n then return false, "    Insufficient savings" end
+    _addSavings(-n); _addChecking(n); return true
+  end
+end
+
+-- Withdraw: selected -> other
+function economyAPI.withdraw(n, account)
+  n = _clamp(n); if n <= 0 then return false, "Amount?" end
+  local acct = _acct(account)
+  if acct == "savings" then
+    -- savings -> checking (allowed)
+    local _, sav = economyAPI.getBankBalances()
+    if sav < n then return false, "    Insufficient savings" end
+    _addSavings(-n); _addChecking(n); return true
+  elseif acct == "checking" then
+    -- checking -> savings (blocked while loan active)
+    if economyAPI.hasActiveLoan() then return false, "Disabled while is loan active" end
+    if saveAPI.getPlayerMoney() < n then return false, "    Insufficient checking" end
+    _addChecking(-n); _addSavings(n); return true
+  end
+end
+
+-- Transfer: selected account receives
+function economyAPI.transfer(n, src, dest)
+  n = _clamp(n); if n <= 0 then return false, "Amount?" end
+  src  = _acct(src)
+  dest = _acct(dest)
+  if src == dest then return false, "Same account" end
+  if dest == "savings" and economyAPI.hasActiveLoan() then
+    return false, "Transfers to savings disabled while loan active"
+  end
+  if src == "checking" and dest == "savings" then
+    return economyAPI.deposit(n, "savings")
+  elseif src == "savings" and dest == "checking" then
+    return economyAPI.withdraw(n, "savings")
+  else
+    -- Fallback (shouldn’t happen with _acct): route via explicit ops
+    if dest == "savings" then return economyAPI.deposit(n, "savings") end
+    return economyAPI.withdraw(n, "savings")
+  end
+end
+
+
+
 
 return economyAPI
