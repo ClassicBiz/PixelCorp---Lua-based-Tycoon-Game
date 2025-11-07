@@ -259,9 +259,9 @@ end
 local function _id(name) return (itemsAPI.idByName and itemsAPI.idByName(name)) or name end
 
 local LOOT = {
-  bush   = { pool = {"Cherry","Berry"},    qty = function() return math.random(1,8) end,  icon="*", color=colors.purple   },
+  bush   = { pool = {"Cherries","Berries"},    qty = function() return math.random(1,8) end,  icon="*", color=colors.purple   },
   tree   = { pool = {"Lemon","Mango"},     qty = function() return math.random(1,4) end,  icon="*", color=colors.lime  },
-  ground = { cash = true,                   amt = function() return math.random(5,50) end, icon="$", color=colors.yellow},
+  ground = { cash = true,                   amt = function() return math.random(1,20) end, icon="$", color=colors.yellow},
 }
 
 local function _safeGiveItems(names, count)
@@ -946,7 +946,7 @@ function refreshUI()
     local t = timeAPI.getTime()
     local hour = t.hour
     if hour >= 20 then
-      uiAPI.toast("displayFrame", "Skip available 20:00 -> 05:30", 10,4, colors.gray, 0.5)
+      uiAPI.toast("displayFrame", "Skip available 20:00 -> 05:30", 10,5, colors.gray, 0.5)
       uiAPI._refreshSkipOr4x()
     end
     -- remember last hour we stepped on (persist outside 'do' via upvalue)
