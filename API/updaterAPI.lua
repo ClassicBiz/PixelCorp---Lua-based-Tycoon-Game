@@ -173,14 +173,7 @@ local function httpGet(url_primary, rel_path, ver)
   local v   = ver or "main"
 
   local tries = {
-    -- direct raw
-    _join_url(("https://raw.githubusercontent.com/%s/%s/%s"):format(OWNER, REPO, v), rel),
-    -- sometimes refs/heads helps with oddly named branches
     _join_url(("https://raw.githubusercontent.com/%s/%s/refs/heads/%s"):format(OWNER, REPO, v), rel),
-    -- cdn mirrors
-    _join_url(("https://cdn.jsdelivr.net/gh/%s/%s@%s"):format(OWNER, REPO, v), rel),
-    _join_url(("https://github.com/%s/%s/raw/%s"):format(OWNER, REPO, v), rel),
-    _join_url(("https://cdn.statically.io/gh/%s/%s/%s"):format(OWNER, REPO, v), rel),
   }
 
   local last_err = nil
@@ -221,7 +214,7 @@ end
 -- ---------- Core updater ----------
 local function fetchFile(repoRel, destRel, ver)
   -- Build a primary raw URL (for logging/debug) then let httpGet try mirrors including refs/heads
-  local primary = ("https://raw.githubusercontent.com/%s/%s/%s/%s")
+  local primary = ("https://raw.githubusercontent.com/%s/%s/refs/heads/%s/%s")
     :format(OWNER, REPO, ver or "main", _url_escape_path(repoRel))
   local data, e  = httpGet(primary, repoRel, ver)
   if not data then error(e or ("Failed to download: "..tostring(repoRel))) end
@@ -236,7 +229,7 @@ local DEFAULT_FILES = { [ENTRY] = ENTRY }
 local function downloadVersion(ver)
   ver = ver or "main"
   ensureDir(root)
-  local manURL = ("https://raw.githubusercontent.com/%s/%s/%s/install_manifest.txt"):format(OWNER, REPO, ver)
+  local manURL = ("https://raw.githubusercontent.com/%s/%s/refs/heads/%s/install_manifest.txt"):format(OWNER, REPO, ver)
   local man, _ = httpGet(manURL, "install_manifest.txt", ver)
   if man then
     local n=0
