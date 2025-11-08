@@ -130,7 +130,7 @@ end
 -- =======================
 -- Settings Modal (Main)
 -- =======================
-local version = "0.2.0.7"
+local version = "0.2.0.5"
 local function openSettingsModal(parent)
   local W,H = term.getSize()
   local border = parent:addFrame():setSize(49,17):setPosition(2,2)
@@ -256,29 +256,34 @@ local function openSettingsModal(parent)
   local gv = pages.version
   gv:addLabel():setText("Version:"):setPosition(2,2)
     gv:addLabel():setText("Version:"..version):setPosition(2,12)
-  local ddVer = gv:addDropdown():setPosition(12,2):setSize(18,1)
-  local vers, latest = updaterAPI.getVersionList()
-  for _,v in ipairs(vers) do ddVer:addItem(v) end
-  local curV = settingsAPI.get({"version","current"}, latest or "dev")
-  for i=1, ddVer:getItemCount() do local it=ddVer:getItem(i); local t=(type(it)=="table" and it.text) or it
-    if t==curV then ddVer:selectItem(i) break end
-  end
+local list, latest = updaterAPI.getVersionList()
+local dd = gv:addDropdown():setPosition(2,2):setSize(24,1)
+for _,v in ipairs(list) do dd:addItem(v) end
+if dd.selectItem then
+  local want = updaterAPI.readSelected() or latest or list[1]
+  for i, v in ipairs(list) do if v == want then dd:selectItem(i) break end end
+end
 
   gv:addButton():setText("Update to Latest"):setPosition(2,5):setSize(18,1):setBackground(colors.green):setForeground(colors.white)
     :onClick(function()
       local ok, msg = updaterAPI.updateLatestAndRestart()
+      if not ok then uiAPI.toast(gv, msg or "Update failed", 10, 8, colors.green or colors.red, 2.0) end
     end)
 
   gv:addButton():setText("Repair Current"):setPosition(22,5):setSize(18,1):setBackground(colors.blue):setForeground(colors.white)
     :onClick(function()
       local ok, msg = updaterAPI.repairCurrent()
+      if not ok then uiAPI.toast(gv, msg or "repair failed", 10, 8, colors.green or colors.red, 2.0) end
     end)
 
-  gv:addButton():setText("Switch Version"):setPosition(2,7):setSize(18,1):setBackground(colors.orange):setForeground(colors.black)
+  gv:addButton():setText("Switch & Update")
+    :setPosition(28,2):setSize(16,1)
+    :setBackground(colors.blue):setForeground(colors.white)
     :onClick(function()
-      local v = (type(ddVer:getValue())=="table" and ddVer:getValue().text) or ddVer:getValue()
-      settingsAPI.set({"version","current"}, v or "dev")
-      updaterAPI.switchTo(v or "dev")
+      local ver = dd:getValue() or "main"
+      updaterAPI.switchTo(ver)
+      local ok, msg = updaterAPI.updateLatestAndRestart(ver)
+      if not ok then uiAPI.toast(gv, msg or "Update failed", 10, 8, colors.green or colors.red, 2.0) end
     end)
 
   tabs:onChange(function(self)
@@ -502,7 +507,6 @@ local function loadMainMenu()
 end
 
 loadMainMenu()
-
 
 
 
