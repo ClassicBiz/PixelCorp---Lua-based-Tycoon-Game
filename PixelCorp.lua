@@ -1,5 +1,4 @@
 -- TycoonGame Main Loader - CC:Tweaked + Basalt
--- Adds Main Menu Settings with tabs: General, Save/Load, Game Version.
 local function getRoot()
     local dir = fs.getDir(shell.getRunningProgram())
     if dir == "" then return "/" end
@@ -18,7 +17,7 @@ local updaterAPI  = require(root.."/API/updaterAPI")
 local uiAPI = require(root.."/API/uiAPI")
 local SCREEN_WIDTH, SCREEN_HEIGHT = term.getSize()
 local GAME_TITLE = "Pixel Corp"
-local GROUND_Y = 12  -- ground row for walking dots
+local GROUND_Y = 12
 
 -- Ensure save folders
 if not fs.exists(root.."/saves/") then fs.makeDir(root.."/saves/") end
@@ -31,7 +30,6 @@ local function _archiveProfileAndClearActive(profileName)
   saveAPI.archiveCurrentCommitted(slot)
 end
 
--- 3x5 glyphs used for the title
 local BIG = {
   P = {"111","101","111","100","100"},
   I = {"111","010","010","010","111"},
@@ -101,10 +99,10 @@ end
 
 -- Backgrounds
 local BG_LIST = {
-  root.."/assets/screen.nfp",   -- title scene (no customers)
-  root.."/assets/lemon.nfp",    -- lemonade stand
-  root.."/assets/office.nfp",   -- office
-  root.."/assets/factory.nfp",  -- factory
+  root.."/assets/screen.nfp",
+  root.."/assets/lemon.nfp",
+  root.."/assets/office.nfp",
+  root.."/assets/factory.nfp",
 }
 
 -- Per-background animation config
@@ -190,18 +188,16 @@ local function openSettingsModal(parent)
   gen:addButton():setText("Save")
     :setPosition(34,11):setSize(12,1):setBackground(colors.green):setForeground(colors.white)
     :onClick(function()
-      -- robust text extractor (works if dropdown returns text, table, or index)
       local function _read(dd)
         if not dd or not dd.getValue then return nil end
         local v = dd:getValue()
-        if type(v) == "table" and v.text then return v.text end    -- some Basalt builds
-        if type(v) == "number" and dd.getItem then                 -- index → text
+        if type(v) == "table" and v.text then return v.text end
+        if type(v) == "number" and dd.getItem then
           local it = dd:getItem(v); if type(it)=="table" then return it.text end
         end
-        return v                                                   -- already a string
+        return v
       end
 
-      -- load, mutate, save the entire settings object
       local s = settingsAPI.load()
       s.general = s.general or {}
       s.general.difficulty = _read(ddDiff) or "medium"
@@ -209,7 +205,7 @@ local function openSettingsModal(parent)
       s.general.tutorial   = ((_read(ddTut)  or "on")  == "on")
       s.general.autosave   = ((_read(ddAuto) or "off") == "on")
       uiAPI.toast(gen,"Settings Saved",15,10,colors.green,1.2)
-      settingsAPI.save(s)  -- <- writes /config/.settings
+      settingsAPI.save(s)
     end)
 
   -- ---------- Save/Load Tab ----------
@@ -219,7 +215,6 @@ local function openSettingsModal(parent)
   local list = saveAPI.listProfiles()
   if #list == 0 then list = {"profile1"} end
   for _,p in ipairs(list) do ddProf:addItem(p) end
-  -- pre-select current
   local cur = saveAPI.getActiveProfile()
   for i=1, ddProf:getItemCount() do local it=ddProf:getItem(i); local t=(type(it)=="table" and it.text) or it
     if t==cur then ddProf:selectItem(i) break end
@@ -261,30 +256,34 @@ local function openSettingsModal(parent)
   local gv = pages.version
   gv:addLabel():setText("Version:"):setPosition(2,2)
     gv:addLabel():setText("Version:"..version):setPosition(2,12)
-  local ddVer = gv:addDropdown():setPosition(12,2):setSize(18,1)
-  local vers, latest = updaterAPI.getVersionList()
-  for _,v in ipairs(vers) do ddVer:addItem(v) end
-  -- Try to select current from settings
-  local curV = settingsAPI.get({"version","current"}, latest or "dev")
-  for i=1, ddVer:getItemCount() do local it=ddVer:getItem(i); local t=(type(it)=="table" and it.text) or it
-    if t==curV then ddVer:selectItem(i) break end
-  end
+local list, latest = updaterAPI.getVersionList()
+local dd = gv:addDropdown():setPosition(2,2):setSize(24,1)
+for _,v in ipairs(list) do dd:addItem(v) end
+if dd.selectItem then
+  local want = updaterAPI.readSelected() or latest or list[1]
+  for i, v in ipairs(list) do if v == want then dd:selectItem(i) break end end
+end
 
   gv:addButton():setText("Update to Latest"):setPosition(2,5):setSize(18,1):setBackground(colors.green):setForeground(colors.white)
     :onClick(function()
       local ok, msg = updaterAPI.updateLatestAndRestart()
+      if not ok then uiAPI.toast(gv, msg or "Update failed", 10, 8, colors.green or colors.red, 2.0) end
     end)
 
   gv:addButton():setText("Repair Current"):setPosition(22,5):setSize(18,1):setBackground(colors.blue):setForeground(colors.white)
     :onClick(function()
       local ok, msg = updaterAPI.repairCurrent()
+      if not ok then uiAPI.toast(gv, msg or "repair failed", 10, 8, colors.green or colors.red, 2.0) end
     end)
 
-  gv:addButton():setText("Switch Version"):setPosition(2,7):setSize(18,1):setBackground(colors.orange):setForeground(colors.black)
+  gv:addButton():setText("Switch & Update")
+    :setPosition(28,2):setSize(16,1)
+    :setBackground(colors.blue):setForeground(colors.white)
     :onClick(function()
-      local v = (type(ddVer:getValue())=="table" and ddVer:getValue().text) or ddVer:getValue()
-      settingsAPI.set({"version","current"}, v or "dev")
-      updaterAPI.switchTo(v or "dev")
+      local ver = dd:getValue() or "main"
+      updaterAPI.switchTo(ver)
+      local ok, msg = updaterAPI.updateLatestAndRestart(ver)
+      if not ok then uiAPI.toast(gv, msg or "Update failed", 10, 8, colors.green or colors.red, 2.0) end
     end)
 
   tabs:onChange(function(self)
@@ -293,7 +292,6 @@ local function openSettingsModal(parent)
     elseif idx == 2 then showPage("saveload")
     else showPage("version") end
   end)
-  -- default to General
   showPage("general")
 end
 
@@ -304,7 +302,6 @@ end
       local f = border:addFrame():setSize(29,5):setPosition(2,2):setBackground(colors.white)
       f:addLabel():setText("Select Difficulty"):setPosition(9,1):setForeground(colors.gray)
       local dd = f:addDropdown():setPosition(3,3):setSize(14,1); dd:addItem("easy"); dd:addItem("medium"); dd:addItem("hard")
-      -- preselect current
       local cur = settingsAPI.get({"general","difficulty"}, "medium")
       for i=1, dd:getItemCount() do local it=dd:getItem(i); local t=(type(it)=="table" and it.text) or it if t==cur then dd:selectItem(i) break end end
       f:addButton():setText("OK"):setPosition(20,3):setSize(6,1):setBackground(colors.green):setForeground(colors.white)
@@ -510,7 +507,6 @@ local function loadMainMenu()
 end
 
 loadMainMenu()
-
 
 
 
