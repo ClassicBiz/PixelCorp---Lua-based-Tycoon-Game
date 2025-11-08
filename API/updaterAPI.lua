@@ -22,34 +22,188 @@ local ENTRY        = "PixelCorp.lua"
 
 local json = textutils
 
+-- ===== Remote version discovery (branches + tags) =========================
+local API_BASE   = "https://api.github.com"
+local UA         = "PixelCorp-Updater/1.0"    -- GitHub API wants a User-Agent
+local CACHE_PATH = VERSIONS_DIR.."/remote_versions.json"
+local CACHE_TTL  = 600  -- 10 minutes
+
+local function ensureDir(p) if p and p ~= "" and not fs.exists(p) then fs.makeDir(p) end end
+local function _readAll(p)
+  if not fs.exists(p) then return nil end
+  local f = fs.open(p, "r"); local d = f.readAll(); f.close(); return d
+end
+local function _writeAll(p, s)
+  ensureDir(fs.getDir(p)); local f = fs.open(p, "w"); f.write(s); f.close()
+end
+local function _jdecode(s)
+  local ok,t = pcall(json.unserializeJSON, s); if ok then return t end
+  ok,t = pcall(json.unserialize, s); return ok and t or nil
+end
+local function _jencode(t)
+  local ok,s = pcall(json.serializeJSON, t); if ok then return s end
+  return json.serialize(t)
+end
+
+local function _httpJSON(url)
+  if not http then return nil end
+  local headers = {["User-Agent"]=UA, ["Accept"]="application/vnd.github+json"}
+  local ok, res = pcall(http.get, url, headers)
+  if not ok or not res then return nil end
+  local body = res.readAll(); res.close()
+  local t = _jdecode(body)
+  return (type(t)=="table") and t or nil
+end
+
+local function _fetchRepoMeta()
+  local url = ("%s/repos/%s/%s"):format(API_BASE, OWNER, REPO)
+  local t = _httpJSON(url)
+  return { default_branch = (t and t.default_branch) or "main" }
+end
+local function _fetchBranches()
+  local url = ("%s/repos/%s/%s/branches?per_page=100"):format(API_BASE, OWNER, REPO)
+  local t = _httpJSON(url) or {}
+  local out = {}
+  for _,b in ipairs(t) do table.insert(out, { name=b.name, kind="branch" }) end
+  return out
+end
+local function _fetchTags()
+  local url = ("%s/repos/%s/%s/tags?per_page=100"):format(API_BASE, OWNER, REPO)
+  local t = _httpJSON(url) or {}
+  local out = {}
+  for _,g in ipairs(t) do table.insert(out, { name=g.name, kind="tag" }) end
+  return out
+end
+
+local function _loadCache()
+  local s = _readAll(CACHE_PATH); if not s then return nil end
+  local t = _jdecode(s); if type(t)~="table" then return nil end
+  local now = math.floor(os.epoch("utc")/1000)
+  if (t.ts or 0) + CACHE_TTL < now then return nil end
+  return t
+end
+local function _saveCache(list, latest)
+  local now = math.floor(os.epoch("utc")/1000)
+  _writeAll(CACHE_PATH, _jencode({ ts = now, list = list, latest = latest }))
+end
+
+function M.getVersionList()
+  -- cached live list first
+  local c = _loadCache()
+  if c and type(c.list)=="table" and #c.list>0 then
+    return c.list, (c.latest or c.list[1])
+  end
+
+  -- live from GitHub
+  if http then
+    local ok, list, latest = pcall(function()
+      local meta     = _fetchRepoMeta()
+      local branches = _fetchBranches()
+      local tags     = _fetchTags()
+
+      -- merge unique
+      local seen, arr = {}, {}
+      local function add(v)
+        if v and v.name and not seen[v.name] then seen[v.name]=true; table.insert(arr, v) end
+      end
+      for _,b in ipairs(branches) do add(b) end
+      for _,g in ipairs(tags)     do add(g) end
+
+      -- sort: default branch, then 'develop', other branches alpha, then tags alpha
+      table.sort(arr, function(a,b)
+        local function rank(x)
+          if x.name == meta.default_branch then return 0 end
+          if x.name == "develop" then return 1 end
+          return (x.kind=="branch") and 2 or 3
+        end
+        local ra, rb = rank(a), rank(b)
+        if ra ~= rb then return ra < rb end
+        return a.name:lower() < b.name:lower()
+      end)
+
+      local flat = {}; for _,v in ipairs(arr) do table.insert(flat, v.name) end
+      local lat = meta.default_branch or flat[1] or "main"
+      _saveCache(flat, lat)
+      return flat, lat
+    end)
+    if ok and list and #list>0 then return list, latest end
+  end
+
+  -- fallback manifest (optional)
+  local p = root.."/versions/versions.json"
+  local t = _jdecode(_readAll(p) or "") or {}
+  if type(t.list)=="table" and #t.list>0 then return t.list, (t.latest or t.list[1]) end
+
+  -- last resort
+  return {"main"}, "main"
+end
+
+function M.switchTo(ver)
+  ensureDir(VERSIONS_DIR)
+  _writeAll(VERSIONS_DIR.."/selected.json", _jencode({ selected = ver }))
+end
+function M.readSelected()
+  local t = _jdecode(_readAll(VERSIONS_DIR.."/selected.json") or "")
+  return (t and t.selected) or nil
+end
+
 -- ---------- Helpers ----------
-local function ensureDir(p) if not fs.exists(p) then fs.makeDir(p) end end
 local function join(a,b)
   if a=="" or a=="/" then return "/"..b end
   if a:sub(-1)=="/" then return a..b end
   return a.."/"..b
 end
 
-local function httpGet(url_primary, alt_path, ver)
-  local tries = {
-    url_primary,                                         
-    ("https://cdn.jsdelivr.net/gh/%s/%s@%s/%s")
-      :format(OWNER, REPO, ver or "main", alt_path or ""),
-    ("https://github.com/%s/%s/raw/%s/%s")
-      :format(OWNER, REPO, ver or "main", alt_path or "")
-  }
+-- URL helpers
+local function _join_url(a, b)
+  if not a or a == "" then return b end
+  if not b or b == "" then return a end
+  if a:sub(-1) == "/" then a = a:sub(1, -2) end
+  if b:sub(1, 1) == "/" then b = b:sub(2) end
+  return a .. "/" .. b
+end
+local function _url_escape_path(p)
+  return (tostring(p or ""):gsub(" ", "%%20"):gsub("%[", "%%5B"):gsub("%]", "%%5D"))
+end
+
+-- Robust HTTP get with multiple candidates (branch, refs/heads, refs/tags, mirrors)
+local function httpGet(_, rel_path, ver)
+  if not http then return nil, "HTTP API disabled (enable it in CC config)" end
+  local rel = _url_escape_path(rel_path or "")
+  local v   = tostring(ver or "main")
+
+  local tries = {}
+
+  local function addRaw(verPath) table.insert(tries, _join_url(("https://raw.githubusercontent.com/%s/%s/%s"):format(OWNER, REPO, verPath), rel)) end
+  local function addCDN(uBase)   table.insert(tries, _join_url(uBase, rel)) end
+
+  if v:match("^refs/") then
+    addRaw(v)
+  else
+    addRaw(v)                                 -- normal branch/tag
+    addRaw("refs/heads/"..v)                  -- explicit branch ref
+    addRaw("refs/tags/"..v)                   -- explicit tag ref
+  end
+
+  -- mirrors
+  addCDN(("https://cdn.jsdelivr.net/gh/%s/%s@%s"):format(OWNER, REPO, v))
+  addCDN(("https://github.com/%s/%s/raw/%s"):format(OWNER, REPO, v))
+  addCDN(("https://cdn.statically.io/gh/%s/%s/%s"):format(OWNER, REPO, v))
+
+  local last_err = nil
   for _, u in ipairs(tries) do
-    if u and u ~= "" then
-      local ok, res = pcall(function()
-        return http.get(u, {["User-Agent"]="CC-PixelCorp"})
-      end)
-      if ok and res then
-        local body = res.readAll(); res.close()
-        if body and #body > 0 then return body end
-      end
+    local ok, res = pcall(function()
+      return http.get(u, { ["User-Agent"]="CC-PixelCorp", ["Accept"]="*/*" })
+    end)
+    if ok and res then
+      local body = res.readAll(); res.close()
+      if body and #body > 0 then return body end
+      last_err = "empty body from "..u
+    else
+      last_err = "failed GET "..u
     end
   end
-  return nil, "HTTP failed after mirrors"
+  return nil, last_err or "HTTP failed after mirrors"
 end
 
 local function writeFile(path, data)
@@ -71,31 +225,22 @@ local function readVersions()
   return { "main" }, "main"
 end
 
-function M.getVersionList()
-  return readVersions()
-end
-
 -- ---------- Core updater ----------
 local function fetchFile(repoRel, destRel, ver)
-  local RAW_BASE = ("https://raw.githubusercontent.com/%s/%s/%s/"):format(OWNER, REPO, ver or "main")
-  local primary  = RAW_BASE .. repoRel
-  local data, e  = httpGet(primary, repoRel, ver)
-  if not data then error(e or ("Failed to download: "..repoRel)) end
+  local data, e  = httpGet(nil, repoRel, ver)
+  if not data then error(e or ("Failed to download: "..tostring(repoRel))) end
   local out = join(root, destRel or repoRel)
   local ok, e2 = writeFile(out, data)
   if not ok then error(e2) end
 end
 
-local DEFAULT_FILES = {
-  [ENTRY] = ENTRY,
-}
+local DEFAULT_FILES = { [ENTRY] = ENTRY }
 
 -- Download everything listed in install_manifest.txt (repo-side), else fallback to DEFAULT_FILES.
 local function downloadVersion(ver)
   ver = ver or "main"
   ensureDir(root)
-  local manURL = ("https://raw.githubusercontent.com/%s/%s/%s/install_manifest.txt"):format(OWNER, REPO, ver)
-  local man, _ = httpGet(manURL, "install_manifest.txt", ver)
+  local man, _ = httpGet(nil, "install_manifest.txt", ver)
   if man then
     local n=0
     for line in man:gmatch("[^\r\n]+") do
@@ -134,15 +279,6 @@ end
 
 function M.repairCurrent(ver)
   return M.updateLatest(ver)
-end
-
-function M.switchTo(version)
-  if not version or version == "" then return false, "Version missing" end
-  ensureDir(VERSIONS_DIR)
-  local f = fs.open(VERSIONS_DIR.."/selected.json", "w")
-  f.write(json.serialize({ selected = version }))
-  f.close()
-  return true, "Pinned version "..version
 end
 
 return M
