@@ -16,6 +16,9 @@ local root = getRoot()
 local OWNER  = "ClassicBiz"
 local REPO   = "PixelCorp---Lua-based-Tycoon-Game"
 
+-- Optional: settings to persist installed version/ref
+local ok_settings, settingsAPI = pcall(function() return require(getRoot().."/API/settingsAPI") end)
+
 local VERSIONS_DIR = root.."/versions"
 local MANIFEST     = VERSIONS_DIR.."/versions.json"
 local ENTRY        = "PixelCorp.lua"
@@ -225,6 +228,7 @@ local DEFAULT_FILES = { [ENTRY] = ENTRY }
 
 -- Download everything listed in install_manifest.txt (repo-side), else fallback to DEFAULT_FILES.
 local function downloadVersion(ver)
+  local last_used_url = nil
   ver = ver or "main"
   ensureDir(root)
   local man, _ = httpGetPath(ver, "install_manifest.txt")
@@ -233,15 +237,15 @@ local function downloadVersion(ver)
     for line in man:gmatch("[^\r\n]+") do
       local rel = line:gsub("^%s+",""):gsub("%s+$","")
       if rel ~= "" and rel:sub(1,1) ~= "#" then
-        fetchFile(rel, rel, ver); n = n + 1
+        last_used_url = fetchFile(rel, rel, ver); n = n + 1
       end
     end
-    return true, ("Installed via manifest ("..n.." files)")
+    return true, ("Installed via manifest ("..n.." files)"), last_used_url
   else
     local n=0
     if not DEFAULT_FILES[ENTRY] then DEFAULT_FILES[ENTRY] = ENTRY end
-    for src, dst in pairs(DEFAULT_FILES) do fetchFile(src, dst, ver); n=n+1 end
-    return true, (ENTRY.." Installed "..n.." file(s) (fallback)")
+    for src, dst in pairs(DEFAULT_FILES) do last_used_url = fetchFile(src, dst, ver); n=n+1 end
+    return true, (ENTRY.." Installed "..n.." file(s) (fallback)"), last_used_url
   end
 end
 
