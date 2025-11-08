@@ -21,6 +21,7 @@ local ok_settings, settingsAPI = pcall(function() return require(getRoot().."/AP
 
 local VERSIONS_DIR = root.."/versions"
 local MANIFEST     = VERSIONS_DIR.."/versions.json"
+local VERSION_FILE = VERSIONS_DIR.."/.version"
 local ENTRY        = "PixelCorp.lua"
 
 local json = textutils
@@ -250,6 +251,19 @@ local function downloadVersion(ver)
 end
 
 -- Extract version from installed PixelCorp.lua
+
+-- Write compact .version file alongside selected.json
+local function writeVersionMeta(meta)
+  local tbl = {
+    selected_ref      = meta.selected_ref,
+    installed_ref     = meta.installed_ref or meta.selected_ref,
+    installed_version = meta.installed_version,
+    last_update_url   = meta.last_update_url,
+    last_update_epoch = math.floor(os.epoch("utc")/1000),
+  }
+  _writeAll(VERSION_FILE, _jencode(tbl))
+end
+
 local function detectInstalledVersion()
   local s = _readAll(join(root, ENTRY)); if not s then return nil end
   local v = s:match('[Vv][Ee][Rr][Ss][Ii][Oo][Nn]%s*=%s*["\']([^"\']+)["\']')
