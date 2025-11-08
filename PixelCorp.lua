@@ -258,7 +258,7 @@ local function openSettingsModal(parent)
     gv:addLabel():setText("Version:"..version):setPosition(2,12)
 local list, latest = updaterAPI.getVersionList()
 local dd = gv:addDropdown():setPosition(2,2):setSize(24,1)
-for _,v in ipairs(list) do dd:addItem(v) end
+for _,v in ipairs(list) do dd:addItem(tostring(v)) end
 if dd.selectItem then
   local want = updaterAPI.readSelected() or latest or list[1]
   for i, v in ipairs(list) do if v == want then dd:selectItem(i) break end end
@@ -266,7 +266,7 @@ end
 
   gv:addButton():setText("Update to Latest"):setPosition(2,5):setSize(18,1):setBackground(colors.green):setForeground(colors.white)
     :onClick(function()
-      local ok, msg = updaterAPI.updateLatestAndRestart()
+      local ok, msg = updaterAPI.updateLatestAndRestart(dd:getValue())
       if not ok then uiAPI.toast(gv, msg or "Update failed", 10, 8, colors.green or colors.red, 2.0) end
     end)
 
