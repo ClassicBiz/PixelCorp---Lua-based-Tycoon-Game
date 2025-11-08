@@ -109,7 +109,7 @@ Quick math:
         }
       }
     },
-    -- Add more categories any time (upgrades, stages, licenses, property, tips, FAQ…)
+    
   }
 }
 

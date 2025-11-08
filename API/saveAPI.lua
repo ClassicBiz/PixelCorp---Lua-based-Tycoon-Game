@@ -1,5 +1,3 @@
--- saveAPI.lua - robust saving + slots
-
 local saveAPI = {}
 
 local function getRoot()
@@ -72,7 +70,7 @@ end
 function saveAPI.updateTime(t)
     local s = saveAPI.get()
     s.time.year, s.time.month, s.time.week, s.time.day, s.time.hour, s.time.minute =
-      t.year, t.month, t.week, t.day, t.hour, t.minute
+    t.year, t.month, t.week, t.day, t.hour, t.minute
     saveAPI.setState(s)
 end
 
@@ -153,7 +151,6 @@ function saveAPI.hasSave(slotName)
     return fs.exists(p) or fs.exists(ACTIVE_PATH)
 end
 
--- NEW GAME respects difficulty starting cash
 function saveAPI.newGame()
     currentState = deepcopy(defaultState)
     saveAPI.save()

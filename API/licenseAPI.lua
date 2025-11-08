@@ -1,5 +1,3 @@
--- licenseAPI.lua - Manages business licenses and progression gates
-
 local licenseAPI = {}
 
 local function getRoot()
@@ -33,14 +31,14 @@ end
 
 function licenseAPI.purchase(id)
     local license = licenseAPI.licenses[id]
-    local state = saveAPI.get() -- Get the full state
+    local state = saveAPI.get()
     if not license then return false, "License does not exist." end
     if state.player.money < license.cost then return false, "Not enough money." end
     if licenseAPI.has(id) then return false, "Already purchased." end
 
     state.player.money = state.player.money - license.cost
     state.player.licenses[id] = true
-    saveAPI.setState(state) -- Save the full state
+    saveAPI.setState(state)
     return true, "License purchased."
 end
 

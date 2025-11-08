@@ -1,43 +1,41 @@
--- TOP OF FILE
+local U = {}
 
 local function getRoot()
-    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
-    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
-    local rootPos = string.find(fullPath, "/PixelCorp")
-    if rootPos then
-        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
-    end
-    if fs.exists("/PixelCorp") then return "/PixelCorp" end
-    return fullPath
+  local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+  if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+  local rootPos = string.find(fullPath, "/PixelCorp")
+  if rootPos then
+      return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+  end
+  if fs.exists("/PixelCorp") then return "/PixelCorp" end
+  return fullPath
 end
 local root = getRoot()
 local saveAPI   = require(root.."/API/saveAPI")
 local settingsOK, settingsAPI = pcall(require, root.."/API/settingsAPI")
-local U = {}
 
--- Catalog: add min_level to each; keep your costs as is
+
 U.catalog = {
-  seating     = { level_cap = 4, one_time = false, min_level = 3, req_levels  = {3, 17, 33}, cost = function(lvl) return 40 + 40*lvl end },
-  marketing   = { level_cap = 10, one_time = false, min_level = 5,req_levels  = {5, 9, 15, 19, 24, 29, 32, 36, 40, 44},  cost = function(lvl) return math.floor(25 * (1.8^lvl)) end },
-  awning      = { level_cap = 4, one_time = false, min_level = 7, req_levels  = {7, 14, 21, 29}, cost = function(lvl) return 30 + 40*lvl end },
-  ice_shaver  = { level_cap = 5, one_time = true , min_level = 10, req_levels  = {10, 15, 22, 28, 35}, cost = function(_)  return 60 end },
-  juicer      = { level_cap = 3,  one_time = true , min_level = 5, cost = function(_)  return 120 end },
+  seating     = { level_cap = 4, one_time = false, min_level = 3, req_levels  = {3, 17, 33}, cost = function(lvl) return 40 + 80*lvl end },
+  marketing   = { level_cap = 10, one_time = false, min_level = 5,req_levels  = {5, 9, 15, 19, 24, 29, 32, 36, 40, 44},  cost = function(lvl) return math.floor(50 * (2^lvl)) end },
+  awning      = { level_cap = 4, one_time = false, min_level = 7, req_levels  = {7, 14, 21, 29}, cost = function(lvl) return 30 + 80*lvl end },
+  ice_shaver  = { level_cap = 5, one_time = true , min_level = 10, req_levels  = {10, 15, 22, 28, 35}, cost = function(_)  return 250 end },
+  juicer      = { level_cap = 3,  one_time = true , min_level = 5, cost = function(_)  return 150 end },
 }
 
--- EXP Boost: 5 tiers with level requirements per tier
 U.catalog.exp_boost = {
   level_cap   = 5,
   one_time    = false,
-  min_level   = 10,                         -- shown in UI from level 10+
-  req_levels  = {10, 20, 30, 35, 40},       -- required player level for L1..L5
+  min_level   = 10,                        
+  req_levels  = {10, 20, 30, 35, 40},       
   multipliers = {1.5, 2.25, 3.5, 4.25, 5.0},
-  cost = function(lvl)                       -- lvl is current level (0-based indexing into next tier)
+  cost = function(lvl)                       
     local base = 150
     return math.floor(base * (1.8 ^ (lvl)))
   end
 }
 
--- ---- Storage helpers (ensure exp_boost slot exists) ----
+-- ---- Storage helpers ----
 local function _state()
   local st = saveAPI.get()
   st.upgrades = st.upgrades or { seating=0, marketing=0, awning=0, ice_shaver=false, juicer=false, exp_boost=0 }
@@ -51,10 +49,8 @@ function U.level(key)
 end
 
 local function _playerLevel()
-  -- use loaded module if present
   local mod = package.loaded["/API/levelAPI"]
   if mod and mod.getLevel then return mod.getLevel() end
-  -- fallback: read from save
   local s = saveAPI.get()
   return (s.level and s.level.level) or 1
 end
@@ -69,19 +65,16 @@ function U.minLevel(key)
   local def = U.catalog[key]; return (def and def.min_level) or 1
 end
 
--- Locking/gating check
 function U.canPurchase(key)
   local def = U.catalog[key]; if not def then return false, "Unknown upgrade" end
   local u = _state()
 
-  -- Global min_level gate
   local playerL = _playerLevel()
   local minL = def.min_level or 1
   if playerL < minL then
     return false, ("Requires player lvl %d"):format(minL)
   end
 
-  -- One-time or level-capped
   if def.one_time then
     if u[key] == true then return false, "Already owned" end
   else
@@ -89,7 +82,6 @@ function U.canPurchase(key)
     if lvl >= def.level_cap then return false, "Max level" end
   end
 
-  -- Special per-tier gates for EXP boost
   if key == "exp_boost" then
     local nextTier = U.level("exp_boost") + 1
     local need = def.req_levels[nextTier] or 999

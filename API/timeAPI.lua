@@ -30,8 +30,8 @@ timeAPI.time = {
 local speedModes = {
     pause  = 0,
     normal = 1,
-    ["2x"] = 2,
-    ["4x"] = 4,
+    ["2x"] = 5,
+    ["4x"] = 10,
 }
 local currentSpeed = "normal"
 
@@ -55,12 +55,11 @@ end
 -- Public API: Time IO
 -- ===================
 function timeAPI.getTime()
-    -- return a shallow copy (avoid outside mutation)
     local t = timeAPI.time
     return { year=t.year, month=t.month, week=t.week, day=t.day, hour=t.hour, minute=t.minute }
 end
 
--- Rehydrate from save (call on boot; also auto-wired via onLoad below)
+-- Rehydrate from save
 function timeAPI.loadFromSave()
     local s = saveAPI.get()
     if s and s.time then
@@ -109,7 +108,6 @@ local function advanceMinute()
         if t.hour >= 24 then
             t.hour = 0
             t.day = t.day + 1
-            -- 7-day weeks based on day-of-month
             t.week = math.floor((t.day - 1) / 7) + 1
             if t.day > 30 then
                 t.day = 1
@@ -125,16 +123,13 @@ local function advanceMinute()
     notifyListeners()
 end
 
--- Advance time by the number of minutes for the currentSpeed.
--- Your main loop should call timeAPI.tick() once per UI frame;
--- real-time delay is controlled outside (sleep per speed).
 function timeAPI.tick()
     local mult = speedModes[currentSpeed] or 1
     if mult <= 0 then return end
     for _ = 1, mult do
         advanceMinute()
     end
-    -- persist once per frame after all minute advances
+
     if timeAPI.bindToSave then timeAPI.bindToSave() end
 end
 
@@ -147,26 +142,19 @@ if saveAPI and saveAPI.onLoad then
     end)
 end
 
-
-
 -- ====================
 -- Public API: Fast-forward / Skip
 -- ====================
-
--- Advance by N minutes, notifying listeners each minute (no sleeps).
 function timeAPI.fastForwardMinutes(n)
     n = tonumber(n) or 0
     if n <= 0 then return end
     for _ = 1, n do
-        -- advanceMinute is local above; reuse via upvalue
         local ok, err = pcall(function() advanceMinute() end)
         if not ok then break end
     end
     if timeAPI.bindToSave then timeAPI.bindToSave() end
 end
 
--- Fast-forward to a specific time of day (hh:mm).
--- If nextDay is true and the target is <= current time, we roll to the next day first.
 function timeAPI.fastForwardTo(hh, mm, nextDay)
     hh = tonumber(hh) or 0
     mm = tonumber(mm) or 0
@@ -187,11 +175,6 @@ function timeAPI.fastForwardTo(hh, mm, nextDay)
     if delta > 0 then timeAPI.fastForwardMinutes(delta) end
 end
 
--- Skip the downtime night window to 05:30.
--- Rules:
---   - If it's >= 20:00 (8pm), jump to 05:30 the next day.
---   - If it's < 05:30, jump to 05:30 today.
---   - Otherwise return false (no action).
 function timeAPI.skipNight()
     local t = timeAPI.time or {hour=0, minute=0}
     local h = tonumber(t.hour or 0) or 0
@@ -205,6 +188,5 @@ function timeAPI.skipNight()
     end
     return false
 end
-
 
 return timeAPI

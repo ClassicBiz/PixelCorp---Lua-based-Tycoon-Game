@@ -15,7 +15,7 @@ local root = getRoot()
 local saveAPI = require(root.."/API/saveAPI")
 local economyAPI = require(root.."/API/economyAPI")
 
--- Internal state (persisted via saveAPI)
+-- Internal state
 tutorialAPI._state   = { ran = false, step = 1 }
 tutorialAPI._waiting = nil
 tutorialAPI._root    = nil        -- Basalt parent frame for UI
@@ -99,7 +99,7 @@ function tutorialAPI.show(title, lines, onNext)
   end
   n:onClick(function()
     if onNext then onNext() end
-    tutorialAPI.hide() -- close panel so player can perform the action we’re waiting for
+    tutorialAPI.hide()
   end)
 end
 
@@ -111,7 +111,6 @@ function tutorialAPI.hide()
   tutorialAPI._ui = nil
 end
 
--- Show copy and set checkpoint we’re waiting for.
 function tutorialAPI.waitFor(checkpoint, title, lines, nextStep)
   tutorialAPI._state.step = nextStep or (tutorialAPI._state.step + 1)
   tutorialAPI._waiting    = checkpoint
@@ -119,16 +118,13 @@ function tutorialAPI.waitFor(checkpoint, title, lines, nextStep)
   tutorialAPI.show(title, lines, function() end)
 end
 
--- Fire this from the game when the player does the thing.
 function tutorialAPI.hit(checkpoint)
   if tutorialAPI._waiting == checkpoint then
     tutorialAPI._waiting = nil
-    -- Immediately resume the flow in case the next step shows text
     tutorialAPI.startIfNeeded(tutorialAPI._root)
   end
 end
 
--- Call once AFTER your main UI (top bar, sidebar, displayFrame) is visible.
 function tutorialAPI.startIfNeeded(rootFrame)
   tutorialAPI._root = rootFrame or tutorialAPI._root
   if not tutorialAPI._root then return end

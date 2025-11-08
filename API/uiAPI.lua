@@ -25,6 +25,7 @@ local upgradeAPI = require(root.."/API/upgradeAPI")
 local inventoryAPI = require(root.."/API/inventoryAPI")
 local eventAPI = require(root.."/API/eventAPI")
 local settingsOK, settingsAPI = pcall(require, root.."/API/settingsAPI")
+local guideAPI = require(root.."/API/guideAPI")
 -- --- State container ---
 M.refs = {
   mainFrame = nil,
@@ -64,7 +65,6 @@ function M.progressToArt(progress)
 end
 
 -- === World Interaction Helpers =========================================
--- ephemeral label that disappears after ttl seconds
 local ActivePickups = { set = {}, count = 0 }
 
 local function _addPickup(lbl)
@@ -95,11 +95,8 @@ function M._spawnPickup(parent, x, y, text, fg, ttl, onClick)
       :setText(text or "*")
       :setForeground(fg or colors.lime)
       :setZIndex(130)
-
-  -- track it as active
   _addPickup(lbl)
 
-  -- click to claim
   if onClick then
     lbl:onClick(function()
       pcall(onClick)
@@ -108,7 +105,6 @@ function M._spawnPickup(parent, x, y, text, fg, ttl, onClick)
     end)
   end
 
-  -- auto fade (simple blink then remove)
   local th = parent:addThread()
   th:start(function()
     local t = 0
@@ -125,7 +121,6 @@ function M._spawnPickup(parent, x, y, text, fg, ttl, onClick)
   return lbl
 end
 
--- very light customer “walk-up” animation (1 char that moves, then poof)
 function M.spawnCustomer(parent)
   local W,H = term.getSize()
   local y = H - 3
@@ -138,7 +133,6 @@ function M.spawnCustomer(parent)
       if lbl and lbl.setPosition then lbl:setPosition(x, y) end
       os.sleep(0.05)
     end
-    -- little sparkle when they “buy”
     if lbl and lbl.setText then lbl:setText("*"):setForeground(colors.yellow) end
     os.sleep(0.15)
     pcall(function() lbl:hide(); lbl:remove() end)
@@ -292,7 +286,7 @@ function M.refreshDevStage()
     enabled = hasLic and (lvl >= needLvl) and economyAPI.canAfford(cost)
 
     info = ("Next Stage:\n  %s  Req: Lvl %d%s\n  Cost: %s")
-           :format(nextDef.name or nextKey, needLvl, (needLic~="" and (", License: "..needLic) or ""), _fmtMoney(cost))
+          :format(nextDef.name or nextKey, needLvl, (needLic~="" and (", License: "..needLic) or ""), _fmtMoney(cost))
     btn  = ("Unlock %s"):format(nextDef.name or nextKey)
   else
     info, btn, enabled = "Next Stage:\n  Max stage reached.", "Done", false
@@ -340,7 +334,6 @@ function M.buildDevelopmentPage()
   local f = M.ensurePage("development") 
   _clearDev()
 
-  -- stacked layout
   DEV.licInfo = _addDev(f:addLabel():setText("Next License:"):setPosition(2, 4))
   DEV.licBtn  = _addDev(f:addButton():setText("Buy License"):setPosition(2, 7):setSize(27, 3))
 
@@ -354,7 +347,6 @@ end
 
 function M.showDevelopment()
   if not DEV.built then M.buildDevelopmentPage() end
-  -- Re-enable and reveal any previously hidden dev widgets
   for _, el in ipairs(DEV.els or {}) do
     pcall(function() if el.enable then el:enable() end end)
     pcall(function() if el.show then el:show() end end)
@@ -374,7 +366,56 @@ function M.disableDevelopment()
     pcall(function() if el.hide then el:hide() end end)
   end
 end
--- ===== Stock Page (draws on displayFrame) =====
+
+local MAIN = { built=false, els={} }
+local function _mainAdd(el) table.insert(MAIN.els, el); return el end
+local function _clearMain()
+  for _,el in ipairs(MAIN.els) do
+    pcall(function() if el.disable then el:disable() end end)
+    pcall(function() if el.hide then el:hide() end end)
+    pcall(function() if el.remove then el:remove() end end)
+    pcall(function() if el.destroy then el:destroy() end end)
+  end
+  MAIN.els = {}
+  MAIN.built = false
+end
+
+function M.buildMainPage()
+  if MAIN.built then return end
+  local f = M.refs.displayFrame
+  _mainAdd(f:addLabel()
+    :setText("---------------| Main Screen |-----------------")
+    :setPosition(3,2):setZIndex(10):hide())
+
+  _mainAdd(f:addButton()
+    :setText("[$$]"):setPosition(2,4):setSize(4,1)
+    :setBackground(colors.blue):setForeground(colors.black)
+    :onClick(function() M.openDailyReport("day") end)
+    :hide():enable())
+
+  MAIN.built = true
+end
+
+function M.showMain()
+  if not MAIN.built then M.buildMainPage() end
+  for _,el in ipairs(MAIN.els) do
+    pcall(function() if el.enable then el:enable() end end)
+    pcall(function() if el.show then el:show() end end)
+  end
+end
+
+function M.hideMain()
+  for _,el in ipairs(MAIN.els) do
+    pcall(function() if el.disable then el:disable() end end)
+    pcall(function() if el.hide then el:hide() end end)
+  end
+end
+
+function M.killMain()
+  _clearMain()
+end
+
+-- ===== Stock Page =====
 local STOCK = { built=false, els={}, catIdx=1, epoch=0, qsel={}, refs={} }
 local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
 local STOCK_ORDER = { "base","fruit","sweet","topping" }
@@ -493,7 +534,7 @@ function M.buildStockPage()
           return
         end
         local ok, msg = inventoryAPI.buyFromMarket(id, qtyToBuy)
-        if ok then M.toast("displayFrame", (qtyToBuy.." "..name.." bought!"), 17,5, colors.blue,1.0)
+        if ok then M.toast("displayFrame", (qtyToBuy.." "..name.." bought!"), 17,5, colors.blue,1.0) economyAPI.recordExpense("materials", price, {supplier=id,amount=qtyToBuy})
         else M.toast("displayFrame", msg or "Purchase failed.", 18,5, colors.red,1.0) end
         local newStock = inventoryAPI.getAvailableStock()
         local newPrice = inventoryAPI.getMarketPrice(id)
@@ -593,6 +634,154 @@ function M.hideLoading()
   end
 end
 
+
+function M.openDailyReport(period)
+  period = tostring(period or "day"):lower()
+  local function getTotals(which)
+    if which == "day" and economyAPI.todaysTotals then return economyAPI.todaysTotals() end
+    if economyAPI.periodTotals then
+      local ok, res = pcall(economyAPI.periodTotals, which)
+      if ok and type(res) == "table" then return res end
+    end
+    return { gains=0, expenses=0, net=0, entries={} }
+  end
+  local SECTION_ORDER_GAIN  = { "Sales", "Bank", "Loans", "Misc Gains" }
+  local SECTION_ORDER_EXP   = { "Materials", "Upgrades", "Licenses", "Marketing", "Wages", "Loans", "Bank", "Misc Exp" }
+
+  local function classify(e)
+    local k = tostring(e.kind or "txn")
+    local m = e.meta or {}
+    local item = (m.item and tostring(m.item)) or nil
+    -- GAINS
+    if k == "sale" or k == "tip" then
+      return "Sales", (item or k), "gain"
+    elseif k == "interest" or k == "bank_interest" then
+      return "Bank", "Savings interest", "gain"
+    elseif k == "loan_principal" or k == "loan_taken" then
+      return "Loans", "Loan proceeds", "gain"
+    elseif e.gain == true then
+      return "Misc Gains", (item or k), "gain"
+    end
+    -- EXPENSES
+    if k == "materials" then
+      return "Materials", (item or "materials"), "expense"
+    elseif k == "upgrade" then
+      return "Upgrades", (m.upgrade or item or "upgrade"), "expense"
+    elseif k == "license" then
+      return "Licenses", (m.license or item or "license"), "expense"
+    elseif k == "marketing" then
+      return "Marketing", (m.campaign or item or "marketing"), "expense"
+    elseif k == "wage" or k == "staff" then
+      return "Wages", (m.role or "staff"), "expense"
+    elseif k == "loan_payment" then
+      return "Loans", "Loan payment", "expense"
+    elseif k == "bank" then
+      return "Bank", (m.type or "bank"), "expense"
+    else
+      return "Misc Exp", (item or k), "expense"
+    end
+  end
+  local function aggregate(entries)
+    local G, E = {}, {}
+    local function add(tbl, sec, row, amt)
+      tbl[sec] = tbl[sec] or { _total = 0, rows = {} }
+      local r = tbl[sec].rows[row] or { total = 0, count = 0 }
+      r.total = r.total + (tonumber(amt) or 0)
+      r.count = r.count + 1
+      tbl[sec].rows[row] = r
+      tbl[sec]._total = tbl[sec]._total + (tonumber(amt) or 0)
+    end
+    for _, e in ipairs(entries or {}) do
+      local sec, row, side = classify(e)
+      if side == "gain" then add(G, sec, row,  tonumber(e.amount or 0) or 0)
+      else                   add(E, sec, row,  tonumber(e.amount or 0) or 0) end
+    end
+    return G, E
+  end
+
+  local W,H = term.getSize()
+  local border = M.refs.mainFrame:addFrame()
+      :setSize(W-2, H-4):setPosition(2, 4)
+      :setBackground(colors.lightGray):setZIndex(150)
+  local box = border:addFrame()
+      :setSize(W-4, H-6):setPosition(2,2)
+      :setBackground(colors.white):setZIndex(151)
+
+  border:addButton():setText(" X ")
+    :setPosition(W-8,1):setSize(3,1)
+    :setBackground(colors.red):setForeground(colors.white)
+    :onClick(function() border:hide(); border:remove() end)
+
+  box:addLabel():setText("Finance Report"):setPosition(math.floor((W-4)/2)-6,1):setForeground(colors.gray)
+
+  local tabs = box:addMenubar():setPosition(2,2):setSize(20,1):setScrollable(false)
+    :addItem(" Day "):addItem(" Month "):addItem(" Year ")
+  local function tabIndexFor(p) return (p=="day" and 1) or (p=="month" and 2) or 3 end
+  if tabs.selectItem then tabs:selectItem(tabIndexFor(period)) end
+
+  local gainsLbl   = box:addLabel():setPosition(W-26,2):setForeground(colors.green)
+  local expenseLbl = box:addLabel():setPosition(W-26,3):setForeground(colors.red)
+  local netLbl     = box:addLabel():setPosition(W-26,4)
+
+  local left  = box:addScrollableFrame():setPosition(2,4):setSize(math.floor((W-6)/2), H-9):setBackground(colors.white)
+  local right = box:addScrollableFrame():setPosition(2 + math.floor((W-6)/2),5):setSize(math.ceil((W-6)/2), H-9):setBackground(colors.white)
+
+  local function render()
+    pcall(function() left:removeChildren() end)
+    pcall(function() right:removeChildren() end)
+
+    local t = getTotals(period)
+    local net = tonumber(t.net or ((t.gains or 0) - (t.expenses or 0))) or 0
+    gainsLbl:setText(("Gains:    $%d"):format(tonumber(t.gains or 0) or 0))
+    expenseLbl:setText(("Expenses: $%d"):format(tonumber(t.expenses or 0) or 0))
+    netLbl:setText(string.format("Net: %s$%d", net>=0 and "+" or "-", math.abs(net)))
+      :setForeground(net>=0 and colors.green or colors.red)
+    local G, E = aggregate(t.entries or {})
+    local function renderSection(parent, title, secData, color, y)
+      parent:addLabel():setText((" %s "):format(title))
+        :setPosition(1, y):setForeground(colors.black):setBackground(colors.white)
+      y = y + 1
+      if not secData then
+        parent:addLabel():setText(" -")
+          :setPosition(1, y):setForeground(colors.gray); y = y + 1
+        return y
+      end
+      local rows = {}
+      for name, r in pairs(secData.rows or {}) do rows[#rows+1] = {name=name, total=r.total, count=r.count} end
+      table.sort(rows, function(a,b) return a.total > b.total end)
+      for _, r in ipairs(rows) do
+        local line = string.format("  %-14s %s$%d%s",
+          r.name:sub(1,14),
+          (color==colors.green and "+") or "-",
+          math.floor(math.abs(r.total)+0.5),
+          (r.count>1 and ("  (x"..r.count..")") or ""))
+        parent:addLabel():setText(line):setPosition(1, y):setForeground(color)
+        y = y + 1
+      end
+      parent:addLabel():setText(string.rep("-", 22)):setPosition(1, y):setForeground(colors.gray); y = y + 1
+      parent:addLabel():setText(string.format("  Subtotal: %s$%d",
+        (color==colors.green and "+") or "-", math.floor(math.abs(secData._total)+0.5)))
+        :setPosition(1, y):setForeground(color); y = y + 2
+      return y
+    end
+    local yL = 1
+    for _, sec in ipairs(SECTION_ORDER_GAIN) do
+      yL = renderSection(left, sec, G[sec], colors.green, yL)
+    end
+    local yR = 1
+    for _, sec in ipairs(SECTION_ORDER_EXP) do
+      yR = renderSection(right, sec, E[sec], colors.red, yR)
+    end
+  end
+  tabs:onChange(function(self)
+    local idx = self.getItemIndex and self:getItemIndex() or 1
+    period = (idx==1 and "day") or (idx==2 and "month") or "year"
+    render()
+  end)
+
+  render()
+end
+
 -- --- Base layout ---
 function M.createBaseLayout()
   local W, H = term.getSize()
@@ -657,14 +846,13 @@ function M.createBaseLayout()
     end)
   else
       navDD = displayFrame:addDropdown()
-        :setPosition(2, 2)   -- left edge of the top bar; adjust if you want
+        :setPosition(2, 2)
         :setSize(14, 1)
         :setBackground(colors.lightBlue)
         :setForeground(colors.black)
         :setSelectionColor(colors.white, colors.cyan)
                 :setZIndex(25)
   end
-  -- Inventory overlay shell
   local inventoryOverlay = mainFrame:addMovableFrame()
       :setSize(42, 16)
       :setPosition((W - 40) / 2, 3)
@@ -680,7 +868,6 @@ function M.createBaseLayout()
       :setForeground(colors.white)
       :onClick(function() inventoryOverlay:hide() end)
 
-  -- HUD labels 
   local timeLabel  = topBar:addLabel():setText("Time: --"):setPosition(2, 1)
   local moneyLabel = topBar:addLabel():setText("Money: $0"):setPosition(32, 2)
   local stageLabel = topBar:addLabel():setText("Stage: --"):setPosition(25, 1)
@@ -692,7 +879,6 @@ function M.createBaseLayout()
   local levelLabel = topBar:addLabel():setText("lvl 1"):setPosition(1,3):setForeground(colors.yellow)
   local levelBarLabel = topBar:addLabel():setText("|----------| 0%"):setPosition(7,3):setForeground(colors.blue)
 
-  -- Speed buttons
   function M.updateSpeedButtons()
     local speedButtons = M.refs.speedButtons or {}
     local current = timeAPI.getSpeed()
@@ -735,8 +921,6 @@ function M.createBaseLayout()
       :onClick(function() timeAPI.setSpeed("normal"); updateSpeedButtonColors(speedButtons) end)
   speedButtons["2x"] = topBar:addButton():setText(">>"):setPosition(W - 36, 2):setSize(4,1)
       :onClick(function() timeAPI.setSpeed("2x"); updateSpeedButtonColors(speedButtons) end)
-
-  -- A single button that is either ">>>" (4x) or "Skip" depending on time.
   local rightBtn = topBar:addButton():setPosition(W - 32, 2):setSize(4,1)
 
   local function inSkipWindow()
@@ -830,16 +1014,16 @@ local pauseLoadBtn = pauseMenu:addButton()
     :setText("Load Game")
     :setPosition(3, 7)
     :setSize(24, 1)
-    :setBackground(colors.blue)
+    :setBackground(colors.yellow)
     :setForeground(colors.white)
     :onClick(function() if M._onPauseLoad then M._onPauseLoad() end end)
-local pauseSettingsBtn = pauseMenu:addButton()
-    :setText("Settings")
+local guideBtn = pauseMenu:addButton()
+    :setText("Guide")
     :setPosition(3, 9)
     :setSize(24, 1)
-    :setBackground(colors.blue)
+    :setBackground(colors.lightBlue)
     :setForeground(colors.white)
-    :onClick(function() if M._onPauseSettings then M._onPauseSettings() end end)
+    :onClick(function() if guideAPI and guideAPI.show then guideAPI.show() end end)
 local pauseQuitBtn = pauseMenu:addButton()
     :setText("Quit to Main Menu")
     :setPosition(3, 11)
@@ -884,7 +1068,7 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
   M.refs.frames = { root = mainFrame, topbar = topBar, display = displayFrame, overlay = inventoryOverlay, pause = pauseMenu }
 
 
-  -- Make them available globally for legacy code that referenced globals
+  -- available globally for legacy code that referenced globals
   _G.mainFrame        = mainFrame
   _G.topBar           = topBar
   _G.sidebar          = sidebar
@@ -1069,7 +1253,6 @@ function M.openFinanceModal()
   }
 
   local loanBtnById, loanPosById, loanInfoById, payoffBtnById = {}, {}, {}, {}
-
   local function refreshLoanButtons()
     local activeById = {}
     local list = {}
@@ -1079,13 +1262,10 @@ function M.openFinanceModal()
         activeById[tostring(L.id)] = L
       end
     end
-
     for idx, d in ipairs(defs) do
       local yRow = 2 + (idx - 1) * 2 + 1
       loanPosById[d.id] = yRow
-
       local unlocked = d.requiresStage and (Lvl >= d.unlockLevel)
-
       local btn = loanBtnById[d.id]
       if not btn then
         btn = loansF:addButton()
@@ -1198,26 +1378,21 @@ local function acct() local v = (acctDD.getValue and acctDD:getValue()) or "Chec
 local function loanActive() return (economyAPI and economyAPI.hasActiveLoan and economyAPI.hasActiveLoan()) or false end
 
 local function selectedAccount()
-  -- Try text first
   local v = (acctDD.getValue and acctDD:getValue()) or ""
   if type(v) == "string" and v ~= "" then
     v = v:lower()
     if v:find("sav", 1, true) then return "savings" end
     return "checking"
   end
-  -- Fallback to index
   local idx = (acctDD.getItemIndex and acctDD:getItemIndex()) or 1
   return (idx == 2) and "savings" or "checking"
 end
 
--- Buttons (we build them once)
 local dBtn = bankF:addButton():setText("Deposit"):setPosition(2,9):setSize(8,1)
 local wBtn = bankF:addButton():setText("Withdraw"):setPosition(12,9):setSize(9,1)
 
--- Updaters that re-apply visual enable/disable every time the tab is shown
 function refreshButtons()
   if loanActive() and selectedAccount() == "savings" then
-    -- savings deposit disabled while a loan is active
     dBtn:setBackground(colors.lightGray):setForeground(colors.white)
   else
     dBtn:setBackground(colors.green):setForeground(colors.white)
@@ -1225,7 +1400,6 @@ function refreshButtons()
   wBtn:setBackground(colors.red):setForeground(colors.white)
 end
 
--- Safe handlers (no duplicate binds)
 dBtn:onClick(function()
   local a = amt()
   if a <= 0 then return end
@@ -1234,17 +1408,21 @@ dBtn:onClick(function()
     return
   end
   local ok, msg = economyAPI.deposit(a, selectedAccount())   -- checking -> selected acct
-  if selectedAccount() == "savings" then dAct = "savings" else  dAct = "checkings" end
+  if selectedAccount() == "savings" then dAct = "savings" else  dAct = "checking" end
   M.toast(bankF, ok and ("Deposited $"..a.." to "..dAct) or (msg or "Failed"), ok and 9 or 8, 11, ok and colors.green or colors.red, 1.8)
+  if ok and dAct == "savings" then economyAPI.recordSavingsDeposit(a) end
+  if ok and dAct == "checking" then economyAPI.recordSavingsWithdraw(a) end
   M.refreshBalances(); refreshButtons()
 end)
 
 wBtn:onClick(function()
   local a = amt()
   if a <= 0 then return end
-  if selectedAccount() == "savings" then wAct = "savings" else  wAct = "checkings" end
+  if selectedAccount() == "savings" then wAct = "savings" else  wAct = "checking" end
   local ok, msg = economyAPI.withdraw(a, selectedAccount())  -- selected acct -> checking
   M.toast(bankF, ok and ("Withdrew $"..a.." from "..wAct) or (msg or "Failed"), ok and 9 or 8, 11, ok and colors.green or colors.red, 1.4)
+    if ok and dAct == "savings" then economyAPI.recordSavingsWithdraw(a) end
+  if ok and dAct == "checking" then economyAPI.recordSavingsDeposit(a) end
   M.refreshBalances(); refreshButtons()
 end)
 
@@ -1252,7 +1430,7 @@ if acctDD.onChange then acctDD:onChange(function() M.refreshBalances() refreshBu
 M.refreshBalances()
 refreshButtons()
   ----------------------------------------------------------------
-  -- STOCKS TAB (your code kept as-is)
+  -- STOCKS TAB
   ----------------------------------------------------------------
   local stocksF = pages.stocks
   local curStage = (stageAPI and stageAPI.getStage and stageAPI.getStage()) or "base"
@@ -1378,10 +1556,8 @@ refreshButtons()
     M.renderList(); M.renderChart(); M.renderControls()
   end
 
-  -- default shown tab
   show("bank")
   M.refreshBalances()
 end
-
 
 return M

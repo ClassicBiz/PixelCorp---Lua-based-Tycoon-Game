@@ -17,7 +17,6 @@ local saveAPI = require(root.."/API/saveAPI")
 local timeAPI = require(root.."/API/timeAPI")
 local economyAPI = require(root.."/API/economyAPI")
 
--- Internal helper: get mutable save + ensure schema
 local function _state()
   local s = saveAPI.get()
   s.jobState = s.jobState or {
@@ -25,7 +24,7 @@ local function _state()
     currentJob = nil,
     ticksRemaining = 0,
     earnings = 0,
-    lastHM = nil,   -- last seen (hour*60 + minute)
+    lastHM = nil,
   }
   return s
 end
@@ -64,7 +63,6 @@ local function completeIfDone(js)
   return false
 end
 
--- Tick once per frame; returns true if a job completed this call
 function jobsAPI.tick()
   local s = _state()
   local js = s.jobState
@@ -74,13 +72,11 @@ function jobsAPI.tick()
     return false
   end
 
-  -- If already at/below zero (e.g., exact boundary), finalize without needing another minute
   if completeIfDone(js) then
-    saveAPI.setState(s) -- state changed
+    saveAPI.setState(s)
     return true
   end
 
-  -- Compute delta minutes from game clock
   local t = timeAPI.getTime()
   local nowHM = (t.hour * 60) + t.minute
   local last = js.lastHM or nowHM
@@ -90,13 +86,11 @@ function jobsAPI.tick()
     js.ticksRemaining = math.max(0, (js.ticksRemaining or 0) - delta)
     js.lastHM = nowHM
     if completeIfDone(js) then
-      saveAPI.setState(s) -- state changed
+      saveAPI.setState(s)
       return true
     end
-    saveAPI.setState(s) -- state changed (remaining/lastHM updated)
+    saveAPI.setState(s)
   end
-
-  -- No change → no disk write
   return false
 end
 

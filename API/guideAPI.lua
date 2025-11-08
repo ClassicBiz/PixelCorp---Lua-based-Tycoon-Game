@@ -33,15 +33,14 @@ local ACTIVE_BG = colors.lightBlue
 local ACTIVE_FG = colors.black
 local INACTIVE_BG = colors.white
 local INACTIVE_FG = colors.black
-local dividerX = 21  -- X position of your divider line
+local dividerX = 21  -- X position of divider line
 local dividerY = 2   -- starting Y
-local dividerH = 14  -- number of rows (adjust as needed)
+local dividerH = 14  -- number of rows
 
 
 local SCREEN_W, SCREEN_H = term.getSize()
 
 local function _wipe(frame) if frame and frame.removeChildren then frame:removeChildren() end end
-
 local function _findCat(data, id)
   for _, c in ipairs(data.categories or {}) do if c.id == id then return c end end
 end
@@ -62,7 +61,6 @@ local function _wrapText(text, maxWidth)
     end
   end
   if #line > 0 then table.insert(lines, line) end
-  -- also preserve intentional newlines by splitting first:
   local out = {}
   for _, block in ipairs(lines) do
     for sub in tostring(block):gmatch("[^\r\n]+") do table.insert(out, sub) end
@@ -90,7 +88,7 @@ local function _renderArticle(catId, articleId)
   _wipe(M._body)
 
   local bw, _bh = M._body:getSize()
-  local contentW = math.max(8, bw - (PADDING)) -- safety minimum
+  local contentW = math.max(8, bw - (PADDING))
   local y = 1
 
   local function addWrappedBlock(text)
@@ -113,17 +111,14 @@ local function _renderArticle(catId, articleId)
     addWrappedBlock("(No content)")
   end
 
-  -- re-highlight category (if re-rendered from external jump)
   for id, b in pairs(M._catButtons) do _setActive(b, id == catId) end
 end
 
 local function _renderCategories(filterText)
   _wipe(M._left)
   M._catButtons = {}
-
   local y = 1
   local ft = (filterText or ""):lower()
-
   for _, cat in ipairs(M._data.categories or {}) do
     local show = (ft == "") or ((cat.title or ""):lower():find(ft, 1, true) ~= nil)
     if show then
@@ -135,14 +130,11 @@ local function _renderCategories(filterText)
         :setForeground(INACTIVE_FG)
         :onClick(function()
           local first = (cat.articles and cat.articles[1] and cat.articles[1].id) or nil
-          -- mark active
           for id, b in pairs(M._catButtons) do _setActive(b, id == cat.id) end
           M._current.catId = cat.id
           _renderArticle(cat.id, first)
         end)
-
       M._catButtons[cat.id] = btn
-      -- keep current selection styled
       _setActive(btn, M._current.catId == cat.id)
       y = y + 1
     end
@@ -151,22 +143,18 @@ end
 
 local function _buildUI(root)
   local W, H = SCREEN_W, SCREEN_H
-
   M._border = root:addFrame()
     :setSize(W - 4, H - 4)
     :setPosition(3, 3)
     :setBackground(colors.lightGray)
     :setZIndex(180)
     :hide()
-
   M._overlay = M._border:addFrame()
     :setSize(W - 6, H - 6)
     :setPosition(2, 2)
     :setBackground(colors.white)
     :setZIndex(181)
     :hide()
-
-  -- Close
   M._border:addButton()
     :setText(" X ")
     :setPosition(45, 1)
@@ -174,22 +162,17 @@ local function _buildUI(root)
     :setBackground(colors.red)
     :setForeground(colors.white)
     :onClick(function() M.hide() end)
-
-  -- Left categories (scrollable)
   M._left = M._overlay:addScrollableFrame()
     :setPosition(2, 3)
     :setSize(19, H - 10)
     :setBackground(colors.white)
     :setDirection("vertical")
-
 for i = 0, dividerH - 1 do
     M._overlay:addLabel()
         :setPosition(dividerX, dividerY + i)
         :setText("|")
         :setForeground(colors.black)
 end
-
-  -- Optional search bar
   M._search = M._overlay:addInput()
     :setPosition(2, 2)
     :setSize(18, 1)
@@ -198,20 +181,22 @@ end
       local txt = self:getValue()
       _renderCategories(txt)
     end)
-
-  -- Right article panel
   M._title = M._overlay:addLabel()
     :setText("Guide")
     :setPosition(22, 2)
     :setForeground(colors.black)
-
   M._right = M._overlay:addScrollableFrame()
     :setPosition(23, 3)
     :setSize(W - 10 - 18, H - 10)
     :setBackground(colors.white)
     :setDirection("vertical")
-
-  M._body = M._right -- alias for clarity
+  M._body = M._right
+    pcall(function()
+    local ui = require(root.."/API/uiAPI")
+    if ui and ui.registerFrame and M._overlay then
+      ui.registerFrame("guide", M._overlay)
+    end
+  end)
 end
 
 -- Public API
@@ -224,6 +209,21 @@ end
 
 function M.setData(data)
   M._data = data or { categories = {} }
+
+  if not (M._data.categories and M._data.categories[1]) then
+    M._data = {
+      categories = {
+        {
+          id = "welcome",
+          title = "Welcome",
+          articles = {
+            { id="start", title="Getting Started", summary="Open the Guide from [?] on Main.", body="No guideData loaded yet. This is a placeholder so you can confirm the Guide UI is working." }
+          }
+        }
+      }
+    }
+  end
+
   _renderCategories(nil)
   local c = M._data.categories[1]
   if c and c.articles and c.articles[1] then
@@ -236,6 +236,8 @@ end
 
 function M.show()
   if not (M._overlay and M._border) then return end
+  pcall(function() M._border:setZIndex(240) end)
+  pcall(function() M._overlay:setZIndex(241) end)
   M._border:show(); M._overlay:show()
   M._open = true
 end
@@ -247,7 +249,6 @@ function M.hide()
 end
 
 function M.openCategory(catId, articleId)
-  -- externally jump to a specific article (e.g., from tutorial)
   _renderArticle(catId, articleId)
   M.show()
 end
