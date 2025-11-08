@@ -1,6 +1,5 @@
 local inventoryAPI = {}
 
-
 local function getRoot()
     local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
     if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
@@ -39,17 +38,7 @@ local function _shouldSpawn(weight)
   if p < 0.05 then p = 0.05 elseif p > 0.95 then p = 0.95 end
   return math.random() < p
 end
-local function _weightedQty(minQty, maxQty, weight)
-  minQty = tonumber(minQty)
-  maxQty = tonumber(maxQty)
-  if maxQty < minQty then maxQty = minQty end
-  local span = maxQty - minQty
-  local cappedMax = minQty + math.floor(span * math.max(0, math.min(1, weight or 1)))
-  if cappedMax < minQty then cappedMax = minQty end
-  return math.random(minQty, cappedMax)
-end
 
--- The one canonical refresher
 local function _refreshMarketIfNeeded()
   local s = saveAPI.get()
   s.market = s.market or {}
@@ -64,57 +53,37 @@ local function _refreshMarketIfNeeded()
 
   local needStockRefresh = (effDay   ~= lastStockDay)
   local needPriceRefresh = (weekBuck ~= lastPriceBuck)
-
   if not (needStockRefresh or needPriceRefresh) then return end
-
-    for _, it in ipairs(itemsAPI.getAll()) do
-        if it.purchasable then
-            if needPriceRefresh then
-                local band  = itemsAPI.marketValueRangeById(it.id)
-                local price = math.random(band.min, band.max)
-                s.market.prices[it.id] = price
-                if economyAPI and economyAPI.setPrice then economyAPI.setPrice(it.id, price) end
-            end
-            if needStockRefresh then
-                local minQ = tonumber(it.market_min)
-                local maxQ = tonumber(it.market_max)
-                if maxQ < minQ then maxQ = minQ end
-
-                local mustSpawn = (minQ > 0)      -- <-- force spawn when min > 0
-                local weight    = itemsAPI.rarityWeightById(it.id)
-                local okSpawn   = mustSpawn or _shouldSpawn(weight)
-
-                if okSpawn then
-                    local qty = math.random(minQ, maxQ)   -- always respect [min,max]
-                    s.market.stock[it.id] = qty
-                else
-                    s.market.stock[it.id] = 0
-                end
-            end
-        end
-    end
-    if needPriceRefresh then s.market.last_price_weekbuck = weekBuck end
-    if needStockRefresh then s.market.last_stock_day      = effDay   end
-    saveAPI.save(s)
-end
-
-
-
-local function _ensure()
-  local p = saveAPI.get().player
-  p.inventory = p.inventory or {}
-  -- initialize all items present in items.json
   for _, it in ipairs(itemsAPI.getAll()) do
-    local id = it.id
-    if p.inventory[id] == nil then p.inventory[id] = 0 end
+    if it.purchasable then
+      if needPriceRefresh then
+        local band  = itemsAPI.marketValueRangeById(it.id)
+        local price = math.random(band.min, band.max)
+        s.market.prices[it.id] = price
+        if economyAPI and economyAPI.setPrice then economyAPI.setPrice(it.id, price) end
+      end
+        if needStockRefresh then
+          local minQ = tonumber(it.market_min)
+          local maxQ = tonumber(it.market_max)
+          if maxQ < minQ then maxQ = minQ end
+
+          local mustSpawn = (minQ > 0)
+          local weight    = itemsAPI.rarityWeightById(it.id)
+          local okSpawn   = mustSpawn or _shouldSpawn(weight)
+
+          if okSpawn then
+            local qty = math.random(minQ, maxQ)
+            s.market.stock[it.id] = qty
+          else
+            s.market.stock[it.id] = 0
+          end
+        end
+      end
   end
-  saveAPI.save()
-  return p.inventory
+  if needPriceRefresh then s.market.last_price_weekbuck = weekBuck end
+  if needStockRefresh then s.market.last_stock_day      = effDay   end
+  saveAPI.save(s)
 end
-
-
--- Item definitions with rarity
--- itemPool now from itemsAPI.marketPool()
 
 function inventoryAPI.getAllStockItems()
   local out = {}
@@ -130,7 +99,6 @@ local function _ensureInventory()
   s.player = s.player or {}
   s.player.inventory = s.player.inventory or {}
   local inv = s.player.inventory
-  -- seed every item in items.json
   for _, it in ipairs(itemsAPI.getAll()) do
     if inv[it.id] == nil then inv[it.id] = 0 end
   end
@@ -138,7 +106,6 @@ local function _ensureInventory()
   return inv
 end
 
--- Fix this: return player.inventory, not root .inventory
 function inventoryAPI.getPlayerInventory()
     return _ensureInventory()
 end
@@ -147,18 +114,10 @@ function inventoryAPI.getAll()
   local inv = _ensureInventory()
   local out = {}
   for k, v in pairs(inv) do out[k] = tonumber(v) or 0 end
-  -- in case new items were added to JSON after save
   for _, it in ipairs(itemsAPI.getAll()) do
     if out[it.id] == nil then out[it.id] = 0 end
   end
   return out
-end
-
-local function _ensureMarket(stage)
-    local market = saveAPI.get().market or {}
-    market[stage] = market[stage] or { availableStock = {}, lastRefreshedDay = -1 }
-    saveAPI.get().market = market
-    return market[stage]
 end
 
 function inventoryAPI.getQty(item)
@@ -198,9 +157,7 @@ function inventoryAPI.getMarketPrice(id)
 end
 
 function inventoryAPI.refreshMarketStock(_effDay)
-  -- We ignore the param and just perform the modern refresh
   _refreshMarketIfNeeded()
-  -- Returning the current stock can be handy for callers that used the old return.
   return inventoryAPI.getAvailableStock()
 end
 

@@ -1,29 +1,27 @@
 local economyAPI = {}
 
 local function getRoot()
-    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
-    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
-    local rootPos = string.find(fullPath, "/PixelCorp")
-    if rootPos then
-        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
-    end
-    if fs.exists("/PixelCorp") then return "/PixelCorp" end
-    return fullPath
+  local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+  if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+  local rootPos = string.find(fullPath, "/PixelCorp")
+  if rootPos then
+    return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+  end
+  if fs.exists("/PixelCorp") then return "/PixelCorp" end
+  return fullPath
 end
 local root = getRoot()
 local saveAPI      = require(root.."/API/saveAPI")
 local settingsOK, settingsAPI = pcall(require, root.."/API/settingsAPI")
 
--- Example market (kept simple)
 local PRICES = { lemons={min=2,max=4}, sugar={min=1,max=3}, cups={min=1,max=2}, ice={min=1,max=2} }
 local productPrices = {}
 
--- Difficulty-biased random sampler
 local function _biased(minv, maxv)
   local r = math.random()
   local bias = (settingsAPI.stockBias and settingsAPI.stockBias()) or 0
-  if bias == "low"  then r = r*r           -- weights toward 0 -> lower prices
-  elseif bias == "high" then r = 1 - (r*r) -- weights toward 1 -> higher prices
+  if bias == "low"  then r = r*r
+  elseif bias == "high" then r = 1 - (r*r)
   end
   return math.floor( minv + (maxv - minv) * r + 0.5 )
 end
@@ -84,6 +82,68 @@ function economyAPI.spendMoney(amount)
 end
 function economyAPI.getBalance() return saveAPI.getPlayerMoney() end
 function economyAPI.canAfford(amount) return saveAPI.getPlayerMoney() >= (tonumber(amount) or 0) end
+
+-- ===== Daily Ledger (per in-game day) =========================
+local RESET_HOUR = 6
+local function _dayIndex(t)
+  if not t then return 0 end
+  local y = tonumber(t.year or 0) or 0
+  local m = tonumber(t.month or 1) or 1
+  local d = tonumber(t.day or 1) or 1
+  local idx = y*360 + (m-1)*30 + (d-1)
+  local h = tonumber(t.hour or 0) or 0
+  if h < RESET_HOUR then idx = idx - 1 end
+  return idx
+end
+
+function economyAPI.dayIndex(t) return _dayIndex(t or saveAPI.get().time) end
+
+local function _ledger()
+  local s = saveAPI.get()
+  s.finance = s.finance or {}
+  s.finance.ledger = s.finance.ledger or {}
+  local di = _dayIndex(s.time)
+  s.finance.ledger[di] = s.finance.ledger[di] or { entries = {}, sums = {gains=0, expenses=0} }
+  return s.finance.ledger[di], di, s
+end
+
+local function _addEntry(kind, amount, meta, is_gain)
+  local L, di, s = _ledger()
+  amount = math.floor(tonumber(amount or 0) or 0)
+  if amount == 0 then return end
+  L.entries[#L.entries+1] = {
+    t      = os.clock(),
+    kind   = tostring(kind),
+    amount = amount,
+    gain   = is_gain and true or false,
+    meta   = meta,
+  }
+  if is_gain then L.sums.gains    = (L.sums.gains or 0) + amount
+  else            L.sums.expenses = (L.sums.expenses or 0) + amount end
+  saveAPI.save()
+end
+
+function economyAPI.recordSale(amount, label)
+  _addEntry("sale", amount, {item=label}, true)
+end
+function economyAPI.recordExpense(kind, amount, meta)
+  _addEntry(kind or "expense", amount, meta, false)
+end
+function economyAPI.recordSavingsDeposit(amount)
+  _addEntry("savings_deposit", amount, nil, false)
+end
+function economyAPI.recordSavingsWithdraw(amount)
+  _addEntry("savings_withdraw", amount, nil, true)
+end
+function economyAPI.recordSavingsInterest(amount)
+  _addEntry("savings_interest", amount, nil, true)
+end
+function economyAPI.todaysTotals()
+  local L = select(1, _ledger())
+  local g = tonumber(L.sums.gains or 0) or 0
+  local e = tonumber(L.sums.expenses or 0) or 0
+  return { gains=g, expenses=e, net=g - e, entries=L.entries }
+end
 
 -- ===== Loans =====
 local function _ensureFinance()
@@ -165,6 +225,7 @@ function economyAPI.processDailyLoans()
       local charge = round2(slice * (1 + rate))
       if charge > 0 and economyAPI.canAfford(charge) then
         economyAPI.spendMoney(charge, "Loan daily payment")
+        economyAPI.recordExpense("loan_payment", charge, {loan_id = L.id})
         L.remaining_principal = round2(rem - slice); if L.remaining_principal < 0 then L.remaining_principal = 0 end
         L.days_paid = (L.days_paid or 0) + 1; paid_any = true
       end
@@ -250,15 +311,12 @@ end
 function economyAPI.stepStocks()
   local M = _ensureStocks()
 
-  -- Regime + randomness tunables
   local BASE_NOISE_PCT  = 0.010  -- baseline noise (↑ from 0.007)
   local STEP_CAP_PCT    = 0.08   -- max move per step (↑ from 0.06)
   local EPS_PCT         = 0.02   -- soft distance from min/max
   local SHOCK_PROB      = 0.04   -- shock chance (↑ from 0.03)
   local SHOCK_MAG_PCT   = 0.12   -- shock size (↑ from 0.10)
   local SHOCK_DECAY     = 0.78   -- shock decay
-
-  -- Two regimes: 0=calm, 1=storm. Storm has higher vol + looser trend persistence.
   local REGIME_P        = { calm = 0, storm = 1 }
   local REGIME_PERSIST  = { [0]=0.95, [1]=0.88 }  -- trend persistence by regime
   local REGIME_VOLJIT   = { [0]=0.06, [1]=0.12 }  -- vol jitter by regime
@@ -302,7 +360,7 @@ function economyAPI.stepStocks()
     if S.vol < 0.5 then S.vol = 0.5 elseif S.vol > 2.2 then S.vol = 2.2 end
     if math.random() < SHOCK_PROB and math.abs(S.shock or 0) < range * 0.025 then
       local dir = (math.random() < 0.5) and -1 or 1
-      S.shock = dir * (range * (0.5 + math.random()*0.5) * SHOCK_MAG_PCT) -- 50–100% of MAG
+      S.shock = dir * (range * (0.5 + math.random()*0.5) * SHOCK_MAG_PCT)
     else
       S.shock = (S.shock or 0) * SHOCK_DECAY
       if math.abs(S.shock) < 0.001 then S.shock = 0.0 end
@@ -417,6 +475,7 @@ function economyAPI.accrueSavingsInterest()
     if r > 0 and (B.savings or 0) > 0 then
       local add = math.floor((B.savings * r) + 0.5)
       if add > 0 then B.savings = B.savings + add end
+      economyAPI.recordSavingsInterest(add)
     end
   end
 
@@ -449,7 +508,6 @@ local function _acct(a)
   return "checking"
 end
 
--- Deposit: checking -> selected
 function economyAPI.deposit(n, account)
   n = _clamp(n); if n <= 0 then return false, "Amount?" end
   local acct = _acct(account)
@@ -458,31 +516,24 @@ function economyAPI.deposit(n, account)
     if saveAPI.getPlayerMoney() < n then return false, "    Insufficient checking" end
     _addChecking(-n); _addSavings(n); return true
   elseif acct == "checking" then
-    -- move from savings -> checking
     local _, sav = economyAPI.getBankBalances()
     if sav < n then return false, "    Insufficient savings" end
     _addSavings(-n); _addChecking(n); return true
   end
 end
 
--- Withdraw: selected -> other
 function economyAPI.withdraw(n, account)
   n = _clamp(n); if n <= 0 then return false, "Amount?" end
   local acct = _acct(account)
   if acct == "savings" then
-    -- savings -> checking (allowed)
     local _, sav = economyAPI.getBankBalances()
     if sav < n then return false, "    Insufficient savings" end
     _addSavings(-n); _addChecking(n); return true
   elseif acct == "checking" then
-    -- checking -> savings (blocked while loan active)
     if economyAPI.hasActiveLoan() then return false, "Disabled while is loan active" end
     if saveAPI.getPlayerMoney() < n then return false, "    Insufficient checking" end
     _addChecking(-n); _addSavings(n); return true
   end
 end
-
-
-
 
 return economyAPI

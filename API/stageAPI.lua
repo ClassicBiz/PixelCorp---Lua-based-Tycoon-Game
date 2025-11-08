@@ -21,7 +21,7 @@ local backgroundAPI = require(root.."/API/backgroundAPI")
 local STAGE_BG = {
   base     = root.."/assets/screen.nfp",
   lemonade_stand = root.."/assets/lemon.nfp",
-  lemonade = root.."/assets/lemon.nfp",  -- alias for art key
+  lemonade = root.."/assets/lemon.nfp",
   office   = root.."/assets/office.nfp",
   factory  = root.."/assets/factory.nfp",
   tower    = root.."/assets/tower.nfp",
@@ -47,32 +47,24 @@ end
 function stageAPI.unlock(name)
   local s = _ensure()
   s.unlocks[name] = true
-  -- Promote current stage only if this is "higher" than current
   s.stage = name
   saveAPI.save()
 end
 
--- Explicitly set current stage (assumes it's unlocked)
 function stageAPI.setStage(name)
   local s = _ensure()
-  -- Accept either "progress keys" or "art keys" that exist in STAGE_BG
   if not STAGE_BG[name] then
-    -- map common progress key -> art key where needed
     if name == "lemonade_stand" and STAGE_BG["lemonade"] then name = "lemonade" end
   end
-  -- auto-unlock if needed
   s.unlocks[name] = true
   s.stage = name
   saveAPI.save()
 end
 
--- Call this whenever stage changes or on page load
--- frame: the Basalt frame to draw background into
 function stageAPI.refreshBackground(frame)
   local s = _ensure()
   local path = STAGE_BG[s.stage] or STAGE_BG.base
   local ok, err = pcall(function()
-    -- ensure cached
     backgroundAPI.preload(path)
     backgroundAPI.setCachedBackground(frame, path, 1, 1)
   end)
@@ -81,25 +73,13 @@ function stageAPI.refreshBackground(frame)
     os.sleep(5)
   end
 end
--- Return a shallow copy of stage->path map
+
 function stageAPI.getAllStagePaths()
   local out = {}
   for k,v in pairs(STAGE_BG) do out[k] = v end
   return out
 end
 
--- Preload all stage backgrounds once at load
-local ok_pre, err_pre = pcall(function()
-  for _, p in pairs(STAGE_BG) do
-    backgroundAPI.preload(p)
-  end
-end)
-if not ok_pre then print("stageAPI: preload error: "..tostring(err_pre)) end
-
-
-
-
--- Set stage from a progress key (e.g., "warehouse") by mapping to an art key if needed
 function stageAPI.setStageFromProgress(progressKey)
   local map = {
     odd_jobs = "base",

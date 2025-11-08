@@ -1,7 +1,3 @@
--- updaterAPI.lua
--- Self-contained updater that pulls files from GitHub (or mirrors) and replaces local files.
--- Preserves saves (/saves) and config (/config).
-
 local M = {}
 
 -- ---------- Paths / constants ----------
@@ -21,7 +17,7 @@ local OWNER  = "ClassicBiz"
 local REPO   = "PixelCorp---Lua-based-Tycoon-Game"
 
 local VERSIONS_DIR = root.."/versions"
-local MANIFEST     = VERSIONS_DIR.."/versions.json"   -- optional local list of tags/branches
+local MANIFEST     = VERSIONS_DIR.."/versions.json"
 local ENTRY        = "PixelCorp.lua"
 
 local json = textutils
@@ -36,11 +32,11 @@ end
 
 local function httpGet(url_primary, alt_path, ver)
   local tries = {
-    url_primary,                                            -- raw.githubusercontent.com/...
+    url_primary,                                         
     ("https://cdn.jsdelivr.net/gh/%s/%s@%s/%s")
-      :format(OWNER, REPO, ver or "main", alt_path or ""),  -- CDN mirror
+      :format(OWNER, REPO, ver or "main", alt_path or ""),
     ("https://github.com/%s/%s/raw/%s/%s")
-      :format(OWNER, REPO, ver or "main", alt_path or "")   -- raw page fallback
+      :format(OWNER, REPO, ver or "main", alt_path or "")
   }
   for _, u in ipairs(tries) do
     if u and u ~= "" then
@@ -123,7 +119,6 @@ function M.updateLatest(ver)
   if not http then return false, "HTTP API is disabled in CC config." end
   local ok, msg = pcall(function() return downloadVersion(ver) end)
   if ok then
-    -- ok is true, msg is (true, info) from downloadVersion
     return true, "Update completed"
   else
     return false, tostring(msg)
@@ -133,19 +128,16 @@ end
 function M.updateLatestAndRestart(ver)
   local ok, msg = M.updateLatest(ver)
   if not ok then return ok, msg end
-  -- Relaunch main entry
   pcall(function() shell.run(join(root, ENTRY)) end)
   return true, "Updated and relaunched"
 end
 
 function M.repairCurrent(ver)
-  -- Simply re-download the current version
   return M.updateLatest(ver)
 end
 
 function M.switchTo(version)
   if not version or version == "" then return false, "Version missing" end
-  -- Write the chosen version into /versions/selected.json for future reference (optional)
   ensureDir(VERSIONS_DIR)
   local f = fs.open(VERSIONS_DIR.."/selected.json", "w")
   f.write(json.serialize({ selected = version }))

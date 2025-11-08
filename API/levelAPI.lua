@@ -1,7 +1,3 @@
--- API/levelAPI.lua
--- Level progression + XP rules for crafting and selling.
--- Persists via saveAPI. Max level 250. Stage unlock thresholds handled here.
-
 
 local function getRoot()
     local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
@@ -20,29 +16,23 @@ local upgradeAPI = require(root.."/API/upgradeAPI")
 local settingsOK, settingsAPI = pcall(require, root.."/API/settingsAPI")
 
 local levelAPI = {}
-
--- Default flat XP per sale before multipliers (tweakable)
 local BASE_SALE_XP = 10
 
 -- ========= XP tables by stage & rarity =========
--- Rarity keys: "common","uncommon","rare","unique","legendary","mythical","relic","masterwork","divine"
 local XP_TABLE = {
   lemonade = { common=0.5,  uncommon=0.75, rare=1,    unique=1.5,  legendary=2,   mythical=3,   relic=4,   masterwork=5,  divine=10 },
   warehouse = { common=1,    uncommon=2.5,  rare=3.75, unique=5,    legendary=6.5, mythical=8,   relic=10,  masterwork=15, divine=20 },
   factory =   { common=2,    uncommon=4,    rare=7,    unique=10,   legendary=13,  mythical=16,  relic=20,  masterwork=30, divine=40 },
   tower =     { common=4,    uncommon=8,    rare=15,   unique=20,   legendary=26,  mythical=32,  relic=40,  masterwork=60, divine=80 },
 }
-
--- Permanent additive sale multipliers granted by unlocked stages.
--- These ADD to a baseline 1x, not multiply. (e.g., at factory: 1 + 3.5 + 5.5 = 10x before recipe bonus)
 local STAGE_PERM_SALE_BONUS = {
-  lemonade = 0.0,    -- baseline world, no extra
+  lemonade = 0.0,
   warehouse = 3.5,
   factory = 5.5,
   tower = 8.0,
 }
 
--- Stage unlock thresholds (inclusive)
+-- Stage unlock thresholds
 local UNLOCKS = { warehouse=50, factory=100, tower=175 }
 
 -- Item/feature unlocks by level (initial set)
@@ -51,7 +41,7 @@ local ITEM_UNLOCKS = {
   [3]  = {"seating"},
   [4]  = {"honey"},
   [5]  = {"ice_shaver"},
-  [7]  = {"golden_cups"},  -- glass cups
+  [7]  = {"golden_cups"},
   [10] = {"juicer"},
   [13] = {"mangos"},
   [15] = {"awning"},
@@ -59,7 +49,7 @@ local ITEM_UNLOCKS = {
 
 
 -- XP curve: XP required to advance from level L to L+1.
--- Smoothly increases; tweakable. Approximately 100 -> 2k over the range.
+-- Smoothly increases; Approximately 100 -> 2k over the range.
 local function xp_to_next(level)
   local m = (settingsAPI.xpCurveMult and settingsAPI.xpCurveMult()) or 1.0
   local v
@@ -134,8 +124,6 @@ local function _getProductMultiBase(productKey, stageKey)
   s.level.product_multi = s.level.product_multi or {}
   local pm = tonumber(s.level.product_multi[productKey] or 0) or 0
   if pm > 0 then return pm end
-
-  -- Backfill from existing craftXP if present (keeps old saves working)
   local craftXP = tonumber(s.level.products[productKey] or 0) or 0
   if craftXP > 0 then
     pm = craftXP / 10
@@ -156,7 +144,6 @@ function levelAPI.getUnlocks()
   return (_ensure().level.unlocks) or {}
 end
 
--- Add raw XP, clamp, recompute level, and unlock stages if needed.
 function levelAPI.addXP(amount, reason)
   if type(amount) ~= "number" or amount <= 0 then return levelAPI.getLevel(), levelAPI.getXP() end
   local s = _ensure()
@@ -171,8 +158,6 @@ function levelAPI.addXP(amount, reason)
 end
 
 -- ====== Crafting XP ======
--- rarities: array like { "common","rare","uncommon","unique" } (base, fruit, sweet, topping)
--- stageKey: "lemonade" | "warehouse" | "factory" | "tower"
 local function _stageKeyOrCurrent(stageKey)
   if stageKey and XP_TABLE[stageKey] then return stageKey end
   local st = stageAPI.getCurrentStage and stageAPI.getCurrentStage() or "lemonade"
@@ -227,7 +212,7 @@ local function _sumUnlockedStageBonus()
 end
 
 function levelAPI.saleMultiplierForProduct(productKey, stageKey)
-  local stageFlat = _sumUnlockedStageBonus()   -- e.g., lemonade 1.0 baseline + unlocked stage adds
+  local stageFlat = _sumUnlockedStageBonus()
   local perProduct = _getProductMultiBase(productKey, stageKey)
 
   local boost = 1.0

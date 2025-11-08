@@ -22,8 +22,8 @@ local DEFAULTS = {
   general = {
     difficulty = "medium",   -- "easy" | "medium" | "hard"
     navigation = "sidebar",  -- "sidebar" | "dropdown"
-    tutorial   = true,       -- bool
-    autosave   = false,      -- bool
+    tutorial   = true,
+    autosave   = false,
   },
   profile = {
     last_loaded = "profile1",
@@ -46,7 +46,6 @@ local function ensureDir()
   if not fs.exists(CFG_DIR) then fs.makeDir(CFG_DIR) end
 end
 
--- merge 'src' INTO 'dst' with src taking precedence
 local function merge(dst, src)
   for k,v in pairs(src or {}) do
     if type(v) == "table" then
@@ -64,7 +63,6 @@ local function _readFile()
   local fh = fs.open(SETTINGS_PATH, "r")
   local data = fh.readAll(); fh.close()
   local parsed = textutils.unserialize(data) or {}
-  -- IMPORTANT: saved values override defaults (not vice-versa)
   return merge(deepcopy(DEFAULTS), parsed)
 end
 
@@ -80,7 +78,6 @@ function M.load()
   return deepcopy(_cache)
 end
 
--- path: {"general","difficulty"} etc.
 local function _get(path, def)
   if not _cache then M.load() end
   local t = _cache
@@ -101,14 +98,13 @@ local function _set(path, value)
     t = t[k]
   end
   t[path[#path]] = value
-  _writeFile(_cache)  -- persist immediately
+  _writeFile(_cache)
 end
 
 function M.get(path, def) return _get(path, def) end
 function M.set(path, val)  _set(path, val); return true end
 
 function M.save(tbl)
-  -- full-object save (used by Settings modal)
   _cache = merge(deepcopy(DEFAULTS), tbl or {})
   _writeFile(_cache)
   return true

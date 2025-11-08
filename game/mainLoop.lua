@@ -1,14 +1,3 @@
-
--- mainLoop.lua (Rewritten Core) — PixelCorp
--- Goals:
--- 1) Keep the same UI layout and interactions.
--- 2) Push logic into APIs where possible.
--- 3) Keep stage backgrounds stable & fast (no re-paint thrash).
--- 4) Be consistent and predictable; no hidden globals beyond those set by uiAPI.
-
--- =========
--- Bootstrap
--- =========
 local function getRoot()
   local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
   if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
@@ -21,7 +10,6 @@ local function getRoot()
 end
 local root = getRoot()
 
--- Core deps (APIs own the heavy logic)
 local basalt       = require(root.."/API/basalt")
 local uiAPI        = require(root.."/API/uiAPI")
 local timeAPI      = require(root.."/API/timeAPI")
@@ -41,14 +29,14 @@ local guideData    = require(root.."/API/guideData")
 local eventAPI = require(root.."/API/eventAPI")
 local settingsAPI = require(root.. "/API/settingsAPI")
 
--- Seed RNG safely
+-- Seed RNG
 pcall(function() math.randomseed(os.epoch("utc") % 2^31); for i=1,3 do math.random() end end)
 
 -- Screen
 local SCREEN_WIDTH, SCREEN_HEIGHT = term.getSize()
 
 -- ==========================
--- Build the shared UI layout
+--  shared UI layout
 -- ==========================
 local UI = uiAPI.createBaseLayout()
 local mainFrame        = UI.mainFrame
@@ -59,7 +47,6 @@ local displayFrame     = UI.displayFrame
 local inventoryOverlay = UI.inventoryOverlay
 local pauseMenu        = UI and UI.pauseMenu or pauseMenu
 
--- Stash references for convenience
 local function Wipe(frame) if frame and frame.removeChildren then frame:removeChildren() end end
 
 -- =========
@@ -98,7 +85,6 @@ end)
 -- ==================
 -- Inventory Overlay
 -- ==================
--- Tabs are owned here (we keep layout identical to previous UI).
 local inventoryTabs = {}
 local TAB_ORDER = { "Materials", "Products", "Crafting", "All" }
 
@@ -118,7 +104,6 @@ end
 
 tabBar:onChange(function(self) selectInventoryTab(menubarSelectedName(self)) end)
 
--- Tab shells (same positions/sizes/colors as before)
 inventoryTabs["Materials"] = inventoryOverlay:addScrollableFrame()
   :setPosition(2,4):setSize(40,12):setBackground(colors.white):hide()
 inventoryTabs["Products"]  = inventoryOverlay:addScrollableFrame()
@@ -131,7 +116,6 @@ inventoryTabs["All"]       = inventoryOverlay:addScrollableFrame()
 -- ======
 -- Stock
 -- ======
--- The market logic lives in inventoryAPI; this page just renders it.
 local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
 local STOCK_ORDER = { "base","fruit","sweet","topping" }
 local _stockCatIdx = 1
@@ -149,14 +133,27 @@ local function _clearGroup(name)
 end
 
 local _lastAutoKey = nil
-local function autosave(reasonKey)  -- e.g. "06" or "20"
+local function autosave(reasonKey)
   if not (settingsAPI and settingsAPI.autosaveEnabled and settingsAPI.autosaveEnabled()) then return end
-  if _lastAutoKey == reasonKey then return end  -- prevent double-firing in same tick/frame
+  if _lastAutoKey == reasonKey then return end
   _lastAutoKey = reasonKey
 
   saveAPI.save()
   saveAPI.commit(saveAPI.getActiveProfile())
   uiAPI.toast("displayFrame", "Game saved!", 40, 19, colors.blue, 2)
+end
+
+local lastReportIdx = nil
+
+local function maybeOpenDailyReport(t, reason)
+  local cfg = (saveAPI.get().ui) or {}
+  local mode = cfg.dailyReportAuto or "off"
+  local di = (economyAPI.dayIndex and economyAPI.dayIndex(t)) or 0
+  if mode == "midnight" and t.hour == 0 and t.minute == 0 and lastReportIdx ~= di then
+    uiAPI.openDailyReport(); lastReportIdx = di
+  elseif mode == "skip" and reason == "skip" and lastReportIdx ~= di then
+    uiAPI.openDailyReport(); lastReportIdx = di
+  end
 end
 
 -- =====================
@@ -268,7 +265,6 @@ local function populateAll()
   end
 end
 
--- Map friendly names → actual item ids (fallbacks if not found)
 local function _id(name) return (itemsAPI.idByName and itemsAPI.idByName(name)) or name end
 
 local LOOT = {
@@ -280,14 +276,13 @@ local LOOT = {
 local function _safeGiveItems(names, count)
   for i,name in ipairs(names or {}) do
     local id = _id(name)
-    if id then inventoryAPI.add(id, count) end  -- inventoryAPI.add exists and saves :contentReference[oaicite:2]{index=2}
+    if id then inventoryAPI.add(id, count) end
   end
 end
 
 local function spawnBush(x, y)
   uiAPI._spawnPickup(displayFrame, x, y, LOOT.bush.icon, LOOT.bush.color, 8, function()
     local n = LOOT.bush.qty()
-    -- choose one fruit from pool
     local which = LOOT.bush.pool[math.random(1, #LOOT.bush.pool)]
     _safeGiveItems({which}, n)
     uiAPI.toast("displayFrame", ("Picked +"..n.." "..which), 15, 17, colors.yellow, 1.6)
@@ -312,35 +307,29 @@ local function spawnGroundCash(x, y)
   end)
 end
 local SpawnCtrl = {
-  max_active = 3,   -- never show more than 3 pickups on screen
-  cooldown   = 60,   -- minutes remaining before another spawn is allowed
-  charge     = 0,   -- increases each minute w/out a spawn (ramps probability)
+  max_active = 3,
+  cooldown   = 60,
+  charge     = 0,
 }
 
 local function trySpawnWorldPickup(t)
   local hour = t.hour or 0
-
-  -- only daytime
   local daylight = (hour >= 7 and hour <= 20)
   if not daylight then return end
-
-  -- enforce on-screen cap
   local active = (uiAPI.getActivePickups and uiAPI.getActivePickups()) or 0
   if active >= SpawnCtrl.max_active then
     return
   end
 
-  -- hard cooldown (in in-game minutes) after any successful spawn
   if SpawnCtrl.cooldown > 0 then
     SpawnCtrl.cooldown = SpawnCtrl.cooldown - 1
     return
   end
 
-  local base   = 0.002    -- 0.4% baseline per minute
+  local base   = 0.00175
   local chance = base * (1 + SpawnCtrl.charge * 0.2)
 
   if math.random() < chance then
-    -- Choose a spawn type uniformly to keep it varied
     local r = math.random()
     if r < 0.34 then
       spawnBush(8 + math.random(0, 40), math.random(13, 17))
@@ -350,16 +339,13 @@ local function trySpawnWorldPickup(t)
       spawnGroundCash(1 + math.random(1, 48), math.random(13, 17))
     end
 
-    -- reset ramp and start a new cooldown window (8–16 in-game minutes)
     SpawnCtrl.charge   = 0
-    SpawnCtrl.cooldown = math.random(8, 16)  -- space spawns further apart
+    SpawnCtrl.cooldown = math.random(8, 16)
   else
-    -- no spawn this minute; slightly increase the ramp (soft "decay" to fewer spawns)
     SpawnCtrl.charge = math.min(20, SpawnCtrl.charge + 1)
   end
 end
 
--- Fire this every minute via eventAPI’s global listeners
 eventAPI.onGlobal(function(t) trySpawnWorldPickup(t) end)
 
 -- ========
@@ -367,7 +353,6 @@ eventAPI.onGlobal(function(t) trySpawnWorldPickup(t) end)
 -- ========
 local _craftSel = _craftSel or { product="Lemonade", base=nil, fruit=nil, sweet=nil, topping=nil }
 
--- Compact stepper (keeps same look/feel)
 local function mkStepper(parent, x, y, w, color)
   local f = parent:addFrame():setPosition(x,y):setSize(w,1):setBackground(colors.white):setForeground(color or colors.white)
   f._items, f._i, f._onChange = {}, 1, nil
@@ -461,7 +446,7 @@ local function optionLabelsForType(typeName, haveMap, playerLevel, currentProduc
   return list
 end
 
-local ddProduct -- forward
+local ddProduct
 
 local function populateCrafting()
   local tab = inventoryTabs["Crafting"]; Wipe(tab)
@@ -638,7 +623,6 @@ local function showInventoryOverlay()
   selectInventoryTab("Materials")
 end
 
--- Hook the quick buttons in the top bar
 uiAPI.onTopInv(function() showInventoryOverlay() end)
 uiAPI.onTopCraft(function()
   showInventoryOverlay()
@@ -722,30 +706,8 @@ local function rebuildUpgradesPage()
   if upgradeAPI.isVisibleAtLevel("juicer",     Lvl) then buildUpgradeRow("juicer",     y); y=y+2 end
 end
 
--- ==============
--- Main / Dev UI
--- ==============
-local function buildMainPage()
-  _clearGroup("main")
-
-  local title = displayFrame:addLabel():setText("---------------| Main Screen |---------------"):setPosition(2,2):setZIndex(10):hide()
-  local guideBtn = displayFrame:addButton():setText("[??]"):setPosition(2,3):setSize(4,1):setBackground(colors.blue):setForeground(colors.black):hide()
-    :onClick(function()
-       guideAPI.show()
-    end)
-    --local dbg = mainFrame:addLabel():setPosition(2, 10):setForeground(colors.lightGray):setZIndex(100)
-local function refreshSettingsDebug()
-  local s = settingsAPI.load()
-  local g = (s and s.general) or {}
-  dbg:setText(("diff:%s nav:%s tut:%s auto:%s")
-    :format(tostring(g.difficulty or "?"), tostring(g.navigation or "?"),
-            g.tutorial and "on" or "off", g.autosave and "on" or "off"))
-end
-  table.insert(pageElements.main, title); table.insert(pageElements.main, guideBtn); table.insert(pageElements.main, dbg)
-end
-
 -- ==================
--- Page switcher glue
+-- Page switcher
 -- ==================
 local function hideAllPages()
   pcall(function() if uiAPI.hideStock then uiAPI.hideStock() end end)
@@ -756,6 +718,7 @@ local function hideAllPages()
   end
   pcall(function() uiAPI.hideDevelopment() end)
   pcall(function() if uiAPI.disableDevelopment then uiAPI.disableDevelopment() end end)
+  pcall(function() if uiAPI.hideMain then uiAPI.hideMain() end end)
 end
 
 currentPage = "main"
@@ -763,19 +726,12 @@ local function switchPage(name)
   hideAllPages()
   currentPage = name
 
-  -- Keep background correct
   applyStageFromProgress()
 
-  if name == "stock" then
-  pcall(function() if uiAPI.showStock then uiAPI.buildStockPage() uiAPI.showStock()  end end); return
-  elseif name == "upgrades" then
-    rebuildUpgradesPage(); for _,el in ipairs(pageElements.upgrades) do if el.show then el:show() uiAPI.softRefreshStockLabels() end end; return
-  elseif name == "development" then
-    uiAPI.showDevelopment(); return
-  else
-  pcall(function() if uiAPI.killDevelopment then uiAPI.killDevelopment() end end)
-    if #pageElements.main == 0 then buildMainPage() end
-    for _,el in ipairs(pageElements.main) do if el.show then el:show() end end
+  if name == "stock" then pcall(function() if uiAPI.showStock then uiAPI.buildStockPage() uiAPI.showStock() uiAPI.softRefreshStockLabels() end end); return
+  elseif name == "upgrades" then rebuildUpgradesPage(); for _,el in ipairs(pageElements.upgrades) do if el.show then el:show() end end; return
+  elseif name == "development" then uiAPI.showDevelopment(); return
+  elseif name == "main" then pcall(function() if uiAPI.showMain then uiAPI.showMain() end end); return
   end
 end
 
@@ -785,7 +741,6 @@ local NAV_NAME  = { Main="main", Development="development", Stock="stock", Upgra
 
 local function populateSidebar()
   sidebar:setBackground(colors.white)
-  -- clear old buttons (safe even if empty)
   pcall(function() sidebar:removeChildren() end)
   for i, page in ipairs(NAV_PAGES) do
     local pname = string.lower(page)
@@ -806,11 +761,9 @@ local function populateSidebar()
 end
 
 local function populateDropdown()
-  -- reset items
   if navDD.removeItems then pcall(function() navDD:removeItems() end) end
   for _, page in ipairs(NAV_PAGES) do navDD:addItem(page) end
 
-  -- set current selection to the active page if possible
   local want = (currentPage or "main")
   local wantName = (want:sub(1,1):upper()..want:sub(2))
   if navDD.getItemCount and navDD.selectItem then
@@ -821,17 +774,12 @@ local function populateDropdown()
     end
   end
 
-
   navDD:onChange(function(self, value)
     local key
-
-    -- 1) Try index (most reliable)
     if self.getItemIndex then
       local idx = self:getItemIndex()
       key = NAV_ORDER[idx]
     end
-
-    -- 2) If we didn’t get it, try value/text
     if not key then
       local txt = value
       if type(value) == "table" and value.text then
@@ -843,8 +791,6 @@ local function populateDropdown()
       txt = tostring(txt or ""):gsub("^%s+",""):gsub("%s+$","")
       key = NAV_NAME[txt] or txt:lower()
     end
-
-    -- 3) Final guard and go
     if key == "main" or key == "development" or key == "stock" or key == "upgrades" then
       switchPage(key)
     end
@@ -870,7 +816,6 @@ local function renderLevelHUD()
     _G._lastLevelSeen = _G._lastLevelSeen or L
     if L > _G._lastLevelSeen then
       _G._lastLevelSeen = L
-      -- Show unlocks popup (owned by this file for now to keep visuals same)
       local border = mainFrame:addFrame():setSize(34,14):setPosition(12,5):setBackground(colors.lightGray):setZIndex(220)
       local box    = border:addFrame():setSize(32,12):setPosition(2,2):setBackground(colors.white):setZIndex(221)
       box:addLabel():setText("Level Up!"):setPosition(12,1):setForeground(colors.green)
@@ -897,7 +842,7 @@ local function renderLevelHUD()
 end
 
 -- ==================
--- Pause menu wiring
+-- Pause menu
 -- ==================
 uiAPI.onPauseOpen(function() timeAPI.setSpeed("pause"); uiAPI.updateSpeedButtons() end)
 uiAPI.onPauseResume(function() timeAPI.setSpeed("normal"); uiAPI.updateSpeedButtons() end)
@@ -912,7 +857,7 @@ end)
 
 
 -- ================
--- Skip Night wiring (20:00 → 05:30)
+-- Skip Night
 -- ================
 uiAPI.onSkipNight(function()
   local t = timeAPI.getTime()
@@ -927,6 +872,7 @@ uiAPI.onSkipNight(function()
   timeAPI.setSpeed(prev or "normal"); uiAPI.updateSpeedButtons()
   refreshUI()
   if ok then uiAPI.toast("displayFrame", "New day!", 20,5, colors.cyan, 1.6) end
+  maybeOpenDailyReport(saveAPI.get().time, "skip")
 end)
 
 -- =====================
@@ -967,6 +913,8 @@ local function trySellOnce()
     uiAPI.toast("topbar", ("+$%d"):format(price), tx, 2, colors.green, 1.7)
     uiAPI.toast("topbar", ("+%d xp"):format(math.floor(xpGrant+0.5)), 10,3, colors.green,1.7)
     uiAPI.toast("displayFrame", ("Sold 1x %s"):format(pick.label), 9,18, colors.yellow,1.7)
+    economyAPI.recordSale(price, pick.label)
+    uiAPI.renderDailyCard(displayFrame)
     uiAPI.refreshBalances()
     if inventoryOverlay and inventoryOverlay.isVisible and inventoryOverlay:isVisible() then refreshInventoryTabs() end
     return true
@@ -980,41 +928,38 @@ timeAPI.onTick(function(_)
 
   local CUSTOMERS_PER_HOUR = (settingsAPI and settingsAPI.customersPerHour and settingsAPI.customersPerHour()) or 4
   local lambdaPerMinute = (CUSTOMERS_PER_HOUR / 60.0)
-  -- integer attempts
   for i=1, math.floor(lambdaPerMinute) do trySellOnce() end
-  -- fractional attempt
   local rem = lambdaPerMinute - math.floor(lambdaPerMinute)
   if rem > 0 and math.random() < rem then trySellOnce() end
-  -- reset debounce once minute moves past the autosave minute
+    maybeOpenDailyReport(t)
+  if uiAPI.renderDailyCard then uiAPI.renderDailyCard(displayFrame) end
+  local di = (economyAPI and economyAPI._debugDayIndex and economyAPI._debugDayIndex(t)) or nil
 end)
-  _didDailyStockRefresh = false
-  local save = false
+
 -- ==============
 -- UI Refreshers
 -- ==============
+  _didDailyStockRefresh = false
+  local save = false
+
 function refreshUI()
   local t = timeAPI.getTime()
   uiAPI.setHUDTime(string.format("Time: Y%d M%d D%d %02d:%02d", t.year, t.month, t.day, t.hour, t.minute))
 
   pcall(function() if uiAPI._refreshSkipOr4x then uiAPI._refreshSkipOr4x() end end)
-  -- Daily market refresh & page repaint if needed (6:00)
   local s = saveAPI.get(); local day, hour, minute = s.time.day, s.time.hour, s.time.minute
-  if hour == 6 then autosave("06") end  -- opening
-  if hour == 20 then autosave("20") end  -- closing
+  if hour == 6 then autosave("06") end
+  if hour == 20 then autosave("20") end
   if hour == 6 then
     if not _didDailyStockRefresh then
       _didDailyStockRefresh = true
-      -- 1) Trigger backend market recompute if available (safely no-op if not present)
       if inventoryAPI then
         pcall(function() if inventoryAPI.rollDailyMarket then inventoryAPI.rollDailyMarket() end end)
         pcall(function() if inventoryAPI.refreshMarket then inventoryAPI.refreshMarket() end end)
         pcall(function() if inventoryAPI.reseedDailyStock then inventoryAPI.reseedDailyStock() end end)
       end
-      -- 2) Soft refresh labels immediately so visible numbers update
       if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
-      -- 3) Do a second soft refresh shortly after in case backend rolls async
       uiAPI.softRefreshStockLabels()
-
       if uiAPI and uiAPI.runLater then
         uiAPI.runLater(1.0, function()
           if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
@@ -1041,12 +986,9 @@ function refreshUI()
       uiAPI.toast("displayFrame", "Skip available 20:00 -> 05:30", 10,19, colors.gray, 0.5)
       uiAPI._refreshSkipOr4x()
     end
-    -- remember last hour we stepped on (persist outside 'do' via upvalue)
     _lastStockHour = _lastStockHour or hour
 
     if hour ~= _lastStockHour then
-      -- Optional: if you might skip multiple hours at once, you can loop here.
-      -- For now, we just step once per observed change.
       pcall(function()
         if economyAPI and economyAPI.stepStocks then
           economyAPI.stepStocks()
@@ -1058,17 +1000,11 @@ function refreshUI()
       _lastStockHour = hour
     end
   end
-
-  -- Money/Stage HUD
   local state = saveAPI.get()
   local currentStageName = ({ odd_jobs="Odd Jobs", lemonade_stand="Lemonade Stand", warehouse="Warehouse Services", factory="Factory", highrise="High-Rise Corporation" })[state.player.progress] or "Odd Jobs"
   uiAPI.setHUDMoney("Money:$" .. (state.player.money or 0))
   uiAPI.setHUDStage("Stage: " .. currentStageName)
-
-  -- Keep background in sync with progress (also on Dev page)
   applyStageFromProgress()
-
-  -- Level bar
   renderLevelHUD()
 end
 
@@ -1098,11 +1034,10 @@ local function initialize()
     function() basalt.autoUpdate() end,
     function()
       uiAPI.setLoading("Loading backgrounds...", 10)
-      -- Preload & paint initial stage
       applyStageFromProgress()
       os.sleep(0.7)
       uiAPI.setLoading("Building pages...", 40)
-      buildMainPage()
+      uiAPI.buildMainPage()
       uiAPI.buildStockPage()
       rebuildUpgradesPage()
       applyNavigationMode()
@@ -1115,9 +1050,6 @@ local function initialize()
       uiAPI.showRoot()
       uiAPI.hideLoading()
       timeAPI.onTick(function(t) eventAPI.onTick(t) end)
-      -- Kick off tutorial after UI is visible
-
-      -- Default page
       switchPage("main")
 
       while true do os.sleep(0.5) end

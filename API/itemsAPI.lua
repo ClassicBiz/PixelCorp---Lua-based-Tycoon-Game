@@ -1,14 +1,14 @@
 local itemsAPI = {}
 
 local function getRoot()
-    local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
-    if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
-    local rootPos = string.find(fullPath, "/PixelCorp")
-    if rootPos then
-        return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
-    end
-    if fs.exists("/PixelCorp") then return "/PixelCorp" end
-    return fullPath
+  local fullPath = "/" .. fs.getDir(shell.getRunningProgram())
+  if fullPath:sub(-1) == "/" then fullPath = fullPath:sub(1, -2) end
+  local rootPos = string.find(fullPath, "/PixelCorp")
+  if rootPos then
+      return string.sub(fullPath, 1, rootPos + #"/PixelCorp" - 1)
+  end
+  if fs.exists("/PixelCorp") then return "/PixelCorp" end
+  return fullPath
 end
 local root = getRoot()
 local saveAPI = require(root.."/API/saveAPI")
@@ -45,7 +45,7 @@ local function _byName()
   return map
 end
 
--- Rarity weight table (lower weight → rarer → less stock/chance)
+-- Rarity weight table
 local _RARITY_WEIGHT = {
   common=1.00, uncommon=0.85, rare=0.70, unique=0.55,
   legendary=0.40, mythical=0.28, relic=0.18, masterwork=0.12, divine=0.08
@@ -64,10 +64,9 @@ RARITY_COLOR = {
   divine    = colors.pink
 }
 
--- === Alias helpers (short display names) ===
+-- === Alias helpers ===
 local function _aliasOf(it)
   if not it then return nil end
-  -- prefer explicit alias; else fall back to full name; else id
   return (it.alias and tostring(it.alias)) or (it.name and tostring(it.name)) or it.id
 end
 
@@ -86,7 +85,6 @@ function itemsAPI.marketValueRangeById(id)
     return { min = tonumber(mv[1]) or 1, max = tonumber(mv[2]) or (tonumber(mv[1]) or 1) }
   end
   local base = tonumber(it.base_value or 1) or 1
-  -- default band if not specified: base±50% (clamped to >=1)
   return { min = math.max(1, math.floor(base * 0.75)), max = math.max(1, math.ceil(base * 1.5)) }
 end
 
@@ -96,7 +94,6 @@ function itemsAPI.itemRarityColor(id_or_item)
   if type(id_or_item) == "table" then
     r = id_or_item.rarity or id_or_item.r or r
   elseif type(id_or_item) == "string" then
-    -- try itemsAPI helpers if present
     if itemsAPI and itemsAPI.getById then
       local it = itemsAPI.getById(id_or_item)
       if it and it.rarity then r = it.rarity end
@@ -176,21 +173,16 @@ function itemsAPI.levelReqById(id)
   return it and (tonumber(it.level) or 0) or 0
 end
 
--- Convenience: is this item unlocked for the given player level?
 function itemsAPI.isUnlockedForLevel(id, level)
   return (tonumber(level) or 0) >= itemsAPI.levelReqById(id)
 end
 
-
--- Lookup base value by **id**
 function itemsAPI.baseValueById(id)
   local it = itemsAPI.getById(id)
   if not it then return 0 end
   return tonumber(it.base_value or 0) or 0
 end
 
-
--- Liquid sweeteners accepted for Italian Ice
 function itemsAPI.isSyrup(id_or_name)
   if not id_or_name then return false end
   local it = itemsAPI.getById(id_or_name) or itemsAPI.getByName(id_or_name)
