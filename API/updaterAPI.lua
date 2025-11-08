@@ -1,7 +1,3 @@
--- updaterAPI.lua
--- Self-contained updater that pulls files from GitHub (or mirrors) and replaces local files.
--- Preserves saves (/saves) and config (/config).
-
 local M = {}
 
 -- ---------- Paths / constants ----------
@@ -21,11 +17,133 @@ local OWNER  = "ClassicBiz"
 local REPO   = "PixelCorp---Lua-based-Tycoon-Game"
 
 local VERSIONS_DIR = root.."/versions"
-local MANIFEST     = VERSIONS_DIR.."/versions.json"   -- optional local list of tags/branches
+local MANIFEST     = VERSIONS_DIR.."/versions.json"
 local ENTRY        = "PixelCorp.lua"
 
 local json = textutils
 
+
+local API_BASE = "https://api.github.com"
+local UA = "PixelCity-Updater/1.0"   -- GitHub API requires a User-Agent
+local CACHE_PATH = root.."/versions/remote_versions.json"
+local CACHE_TTL  = 600  -- seconds (10 min) to avoid rate limiting
+
+local function _readFile(p)
+  if not fs.exists(p) then return nil end
+  local f = fs.open(p, "r"); local d = f.readAll(); f.close(); return d
+end
+local function _writeFile(p, s)
+  fs.makeDir(fs.getDir(p)); local f = fs.open(p, "w"); f.write(s); f.close()
+end
+local function _jsonDecode(s)
+  local ok, t = pcall(textutils.unserializeJSON, s)
+  if ok then return t end
+  -- fallback for older CC if needed
+  ok, t = pcall(textutils.unserialize, s)
+  return ok and t or nil
+end
+local function _jsonEncode(t)
+  local ok, s = pcall(textutils.serializeJSON, t)
+  if ok then return s end
+  return textutils.serialize(t)
+end
+
+local function _httpJSON(url)
+  local h = {["User-Agent"]=UA, ["Accept"]="application/vnd.github+json"}
+  local ok, res = pcall(http.get, url, h)
+  if not ok or not res then return nil, "http failed" end
+  local body = res.readAll(); res.close()
+  local t = _jsonDecode(body)
+  if type(t) ~= "table" then return nil, "bad json" end
+  return t
+end
+
+local function _fetchRepoMeta()
+  local url = string.format("%s/repos/%s/%s", API_BASE, OWNER, REPO)
+  local t = _httpJSON(url); if not t then return { default_branch = "main" } end
+  return { default_branch = t.default_branch or "main" }
+end
+
+local function _fetchBranches()
+  local url = string.format("%s/repos/%s/%s/branches?per_page=100", API_BASE, OWNER, REPO)
+  local t = _httpJSON(url) or {}
+  local out = {}
+  for _,b in ipairs(t) do table.insert(out, { name=b.name, type="branch" }) end
+  return out
+end
+
+local function _fetchTags()
+  local url = string.format("%s/repos/%s/%s/tags?per_page=100", API_BASE, OWNER, REPO)
+  local t = _httpJSON(url) or {}
+  local out = {}
+  for _,g in ipairs(t) do table.insert(out, { name=g.name, type="tag" }) end
+  return out
+end
+
+local function _loadCached()
+  local s = _readFile(CACHE_PATH); if not s then return nil end
+  local t = _jsonDecode(s); if type(t) ~= "table" then return nil end
+  if (t.ts or 0) + CACHE_TTL < os.epoch("utc")/1000 then return nil end
+  return t
+end
+
+local function _saveCache(list, latest)
+  _writeFile(CACHE_PATH, _jsonEncode({ ts = math.floor(os.epoch("utc")/1000), list = list, latest = latest }))
+end
+
+function M.getVersionList()
+
+  local c = _loadCached()
+  if c and type(c.list)=="table" and #c.list>0 then return c.list, (c.latest or c.list[1]) end
+
+  local ok, list, latest = pcall(function()
+    local meta = _fetchRepoMeta()
+    local branches = _fetchBranches()
+    local tags     = _fetchTags()
+
+    local seen, out = {}, {}
+    local function add(name, kind)
+      if not name or seen[name] then return end
+      seen[name] = true
+      table.insert(out, {name=name, kind=kind})
+    end
+    for _,b in ipairs(branches) do add(b.name, "branch") end
+    for _,g in ipairs(tags)     do add(g.name, "tag")    end
+
+    table.sort(out, function(a,b)
+      local function rank(x)
+        if x.name == meta.default_branch then return 0 end
+        if x.name == "develop" then return 1 end
+        return (x.kind == "branch") and 2 or 3
+      end
+      local ra, rb = rank(a), rank(b)
+      if ra ~= rb then return ra < rb end
+      return a.name:lower() < b.name:lower()
+    end)
+
+    local flat = {}
+    for _,v in ipairs(out) do table.insert(flat, v.name) end
+    local lat = meta.default_branch or flat[1] or "main"
+    _saveCache(flat, lat)
+    return flat, lat
+  end)
+  if ok and list and #list > 0 then return list, latest end
+
+  local p = root.."/versions/versions.json"
+  local t = _jsonDecode(_readFile(p) or "") or {}
+  if type(t.list)=="table" and #t.list>0 then return t.list, (t.latest or t.list[1]) end
+  return {"main"}, "main"
+end
+
+function M.switchTo(ver)
+  fs.makeDir(root.."/versions")
+  _writeFile(root.."/versions/selected.json", _jsonEncode({ selected = ver }))
+end
+
+function M.readSelected()
+  local t = _jsonDecode(_readFile(root.."/versions/selected.json") or "")
+  return (t and t.selected) or nil
+end
 -- ---------- Helpers ----------
 local function ensureDir(p) if not fs.exists(p) then fs.makeDir(p) end end
 local function join(a,b)
@@ -36,11 +154,11 @@ end
 
 local function httpGet(url_primary, alt_path, ver)
   local tries = {
-    url_primary,                                            -- raw.githubusercontent.com/...
+    url_primary,                                         
     ("https://cdn.jsdelivr.net/gh/%s/%s@%s/%s")
-      :format(OWNER, REPO, ver or "main", alt_path or ""),  -- CDN mirror
+      :format(OWNER, REPO, ver or "main", alt_path or ""),
     ("https://github.com/%s/%s/raw/%s/%s")
-      :format(OWNER, REPO, ver or "main", alt_path or "")   -- raw page fallback
+      :format(OWNER, REPO, ver or "main", alt_path or "")
   }
   for _, u in ipairs(tries) do
     if u and u ~= "" then
@@ -75,9 +193,6 @@ local function readVersions()
   return { "main" }, "main"
 end
 
-function M.getVersionList()
-  return readVersions()
-end
 
 -- ---------- Core updater ----------
 local function fetchFile(repoRel, destRel, ver)
@@ -123,7 +238,6 @@ function M.updateLatest(ver)
   if not http then return false, "HTTP API is disabled in CC config." end
   local ok, msg = pcall(function() return downloadVersion(ver) end)
   if ok then
-    -- ok is true, msg is (true, info) from downloadVersion
     return true, "Update completed"
   else
     return false, tostring(msg)
@@ -133,24 +247,12 @@ end
 function M.updateLatestAndRestart(ver)
   local ok, msg = M.updateLatest(ver)
   if not ok then return ok, msg end
-  -- Relaunch main entry
   pcall(function() shell.run(join(root, ENTRY)) end)
   return true, "Updated and relaunched"
 end
 
 function M.repairCurrent(ver)
-  -- Simply re-download the current version
   return M.updateLatest(ver)
-end
-
-function M.switchTo(version)
-  if not version or version == "" then return false, "Version missing" end
-  -- Write the chosen version into /versions/selected.json for future reference (optional)
-  ensureDir(VERSIONS_DIR)
-  local f = fs.open(VERSIONS_DIR.."/selected.json", "w")
-  f.write(json.serialize({ selected = version }))
-  f.close()
-  return true, "Pinned version "..version
 end
 
 return M
