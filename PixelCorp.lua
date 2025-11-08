@@ -69,7 +69,7 @@ local function drawBigText(frame, text, x, y, opts)
   local shadow  = opts.shadow or false
   local spacing = opts.spacing or 1
   local dx = (shadow and (type(shadow)=="table" and (shadow.dx or 1) or 1)) or 0
-  local dy = (shadow and (type(shadow)=="table" and (type(shadow)=="table" and (shadow.dy or 1) or 1)) or 0)
+  local dy = (shadow and (type(shadow)=="table" and (shadow.dy or 1) or 1)) or 0
   local shColor = (shadow and (type(shadow)=="table" and (shadow.color or colors.gray) or colors.gray)) or nil
 
   local cursor = x
@@ -254,37 +254,72 @@ local function openSettingsModal(parent)
 
   -- ---------- Game Version Tab ----------
   local gv = pages.version
-  gv:addLabel():setText("Version:"):setPosition(2,2)
-    gv:addLabel():setText("Version:"..version):setPosition(2,12)
-local list, latest = updaterAPI.getVersionList()
-local dd = gv:addDropdown():setPosition(2,2):setSize(24,1)
-for _,v in ipairs(list) do dd:addItem(tostring(v)) end
-if dd.selectItem then
-  local want = updaterAPI.readSelected() or latest or list[1]
-  for i, v in ipairs(list) do if v == want then dd:selectItem(i) break end end
+
+do
+  local cfg_ver = settingsAPI.get({"version","current"}, version or "?")
+  local cfg_ref = settingsAPI.get({"version","installed_ref"}, updaterAPI.readSelected())
+  gv:addLabel():setText(("Installed: %s (%s)"):format(tostring(cfg_ver), tostring(cfg_ref)))
+    :setPosition(2,10):setForeground(colors.gray)
 end
 
-  gv:addButton():setText("Update to Latest"):setPosition(2,5):setSize(18,1):setBackground(colors.green):setForeground(colors.white)
-    :onClick(function()
-      local ok, msg = updaterAPI.updateLatestAndRestart(dd:getValue())
-      if not ok then uiAPI.toast(gv, msg or "Update failed", 10, 8, colors.green or colors.red, 2.0) end
-    end)
 
-  gv:addButton():setText("Repair Current"):setPosition(22,5):setSize(18,1):setBackground(colors.blue):setForeground(colors.white)
-    :onClick(function()
-      local ok, msg = updaterAPI.repairCurrent()
-      if not ok then uiAPI.toast(gv, msg or "repair failed", 10, 8, colors.green or colors.red, 2.0) end
-    end)
+local list, latest = updaterAPI.getVersionList()
+local dd = gv:addDropdown():setPosition(2,3):setSize(24,1)
+for _,v in ipairs(list) do dd:addItem(tostring(v)) end
 
-  gv:addButton():setText("Switch & Update")
-    :setPosition(28,2):setSize(16,1)
-    :setBackground(colors.blue):setForeground(colors.white)
-    :onClick(function()
-      local ver = dd:getValue() or "main"
-      updaterAPI.switchTo(ver)
-      local ok, msg = updaterAPI.updateLatestAndRestart(ver)
-      if not ok then uiAPI.toast(gv, msg or "Update failed", 10, 8, colors.green or colors.red, 2.0) end
-    end)
+
+do
+  local want = updaterAPI.readSelected() or latest or list[1]
+  for i = 1, dd:getItemCount() do
+    local it = dd:getItem(i); local t = (type(it)=="table" and it.text) or it
+    if t == want then dd:selectItem(i) break end
+  end
+end
+
+
+local function ddValueString(d)
+  if not d or not d.getValue then return "" end
+  local v = d:getValue()
+  if type(v) == "table" and v.text then return v.text end
+  if type(v) == "number" and d.getItem then
+    local it = d:getItem(v); return (type(it)=="table" and it.text) or tostring(it)
+  end
+  return tostring(v or "")
+end
+
+
+gv:addButton():setText("Update to Latest")
+  :setPosition(2,6):setSize(18,1)
+  :setBackground(colors.green):setForeground(colors.white)
+  :onClick(function()
+    local ver = latest or "main"
+    updaterAPI.switchTo(ver)
+    local ok, msg = updaterAPI.updateLatestAndRestart(ver)
+    if not ok then uiAPI.toast(gv, msg or "Update failed", 10, 8, colors.red, 2.0) end
+  end)
+
+
+gv:addButton():setText("Repair Current")
+  :setPosition(22,6):setSize(18,1)
+  :setBackground(colors.blue):setForeground(colors.white)
+  :onClick(function()
+    local ver = updaterAPI.readSelected() or latest or "main"
+    local ok, msg = updaterAPI.repairCurrent(ver)
+    uiAPI.toast(gv, ok and (msg or "Repaired") or (msg or "Repair failed"),
+      10, 8, ok and colors.green or colors.red, 2.0)
+  end)
+
+
+gv:addButton():setText("Switch & Update")
+  :setPosition(28,3):setSize(16,1)
+  :setBackground(colors.blue):setForeground(colors.white)
+  :onClick(function()
+    local ver = ddValueString(dd)
+    if ver == "" then ver = latest or "main" end
+    updaterAPI.switchTo(ver)
+    local ok, msg = updaterAPI.updateLatestAndRestart(ver)
+    if not ok then uiAPI.toast(gv, msg or "Update failed", 10, 8, colors.red, 2.0) end
+  end)
 
   tabs:onChange(function(self)
     local idx = self:getItemIndex() or 1
@@ -359,7 +394,7 @@ local function loadMainMenu()
         saveAPI.setProfile(slot)
         saveAPI.newGame()
         local d = settingsAPI.get({"general","difficulty"}, "medium")
-        local startCash = (d == "easy" and 450) or (d == "hard" and 250) or 350
+        local startCash = (settingsAPI.startingCash and settingsAPI.startingCash()) or ((d == "easy" and 450) or (d == "hard" and 250) or 350)
         economyAPI.addMoney(startCash, "fresh start ("..d..")")
         saveAPI.commit(slot)
         if timeAPI and timeAPI.loadFromSave then timeAPI.loadFromSave() end
@@ -507,7 +542,3 @@ local function loadMainMenu()
 end
 
 loadMainMenu()
-
-
-
-
