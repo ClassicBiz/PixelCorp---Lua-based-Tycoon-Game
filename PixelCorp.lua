@@ -19,6 +19,16 @@ local SCREEN_WIDTH, SCREEN_HEIGHT = term.getSize()
 local GAME_TITLE = "Pixel Corp"
 local GROUND_Y = 12
 
+-- Read installed version/ref from /versions/.version
+local function _readVersionMeta()
+  local path = root.."/versions/.version"
+  if not fs.exists(path) then return {} end
+  local f = fs.open(path, "r"); local s = f.readAll(); f.close()
+  local ok,t = pcall(textutils.unserializeJSON, s); if ok and type(t)=="table" then return t end
+  ok,t = pcall(textutils.unserialize, s); if ok and type(t)=="table" then return t end
+  return {}
+end
+
 -- Ensure save folders
 if not fs.exists(root.."/saves/") then fs.makeDir(root.."/saves/") end
 if not fs.exists(root.."/saves/profiles") then fs.makeDir(root.."/saves/profiles") end
@@ -256,8 +266,9 @@ local function openSettingsModal(parent)
   local gv = pages.version
 
 do
-  local cfg_ver = settingsAPI.get({"version","current"}, version or "?")
-  local cfg_ref = settingsAPI.get({"version","installed_ref"}, updaterAPI.readSelected())
+  local meta = _readVersionMeta()
+  local cfg_ver = meta.installed_version or (version or "?")
+  local cfg_ref = meta.installed_ref or updaterAPI.readSelected() or "main"
   gv:addLabel():setText(("Installed: %s (%s)"):format(tostring(cfg_ver), tostring(cfg_ref)))
     :setPosition(2,10):setForeground(colors.gray)
 end
