@@ -29,7 +29,13 @@ local DEFAULTS = {
     last_loaded = "profile1",
   },
   version = {
+    channel = "pre-alpha",
     current = "dev",
+    selected_ref = "main",
+    installed_ref = "main",
+    installed_version = "dev",
+    last_update_url = "",
+    last_update_epoch = 0,
   },
 }
 

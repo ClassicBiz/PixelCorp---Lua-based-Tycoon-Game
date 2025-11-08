@@ -16,6 +16,9 @@ local root = getRoot()
 local OWNER  = "ClassicBiz"
 local REPO   = "PixelCorp---Lua-based-Tycoon-Game"
 
+-- Optional: settings to persist installed version/ref
+local ok_settings, settingsAPI = pcall(function() return require(getRoot().."/API/settingsAPI") end)
+
 local VERSIONS_DIR = root.."/versions"
 local MANIFEST     = VERSIONS_DIR.."/versions.json"
 local ENTRY        = "PixelCorp.lua"
@@ -153,6 +156,13 @@ local function join(a,b)
   if a:sub(-1)=="/" then return a..b end
   return a.."/"..b
 end
+local function writeFile(path, data)
+  ensureDir(fs.getDir(path))
+  local f = fs.open(path, "w")
+  if not f then return false, "cannot open "..path end
+  f.write(data) f.close()
+  return true
+end
 
 -- URL helpers
 local function _join_url(a, b)
@@ -166,26 +176,24 @@ local function _url_escape_path(p)
   return (tostring(p or ""):gsub(" ", "%%20"):gsub("%[", "%%5B"):gsub("%]", "%%5D"))
 end
 
--- Robust HTTP get with multiple candidates (branch, refs/heads, refs/tags, mirrors)
-local function httpGet(_, rel_path, ver)
+-- Robust GET used by installer: tries raw, refs/heads, refs/tags + mirrors
+-- Returns body, used_url OR nil, error
+local function httpGetPath(ver, rel_path)
   if not http then return nil, "HTTP API disabled (enable it in CC config)" end
   local rel = _url_escape_path(rel_path or "")
   local v   = tostring(ver or "main")
 
   local tries = {}
-
   local function addRaw(verPath) table.insert(tries, _join_url(("https://raw.githubusercontent.com/%s/%s/%s"):format(OWNER, REPO, verPath), rel)) end
   local function addCDN(uBase)   table.insert(tries, _join_url(uBase, rel)) end
 
   if v:match("^refs/") then
     addRaw(v)
   else
-    addRaw(v)                                 -- normal branch/tag
-    addRaw("refs/heads/"..v)                  -- explicit branch ref
-    addRaw("refs/tags/"..v)                   -- explicit tag ref
+    addRaw(v)
+    addRaw("refs/heads/"..v)
+    addRaw("refs/tags/"..v)
   end
-
-  -- mirrors
   addCDN(("https://cdn.jsdelivr.net/gh/%s/%s@%s"):format(OWNER, REPO, v))
   addCDN(("https://github.com/%s/%s/raw/%s"):format(OWNER, REPO, v))
   addCDN(("https://cdn.statically.io/gh/%s/%s/%s"):format(OWNER, REPO, v))
@@ -197,7 +205,7 @@ local function httpGet(_, rel_path, ver)
     end)
     if ok and res then
       local body = res.readAll(); res.close()
-      if body and #body > 0 then return body end
+      if body and #body > 0 then return body, u end
       last_err = "empty body from "..u
     else
       last_err = "failed GET "..u
@@ -206,56 +214,48 @@ local function httpGet(_, rel_path, ver)
   return nil, last_err or "HTTP failed after mirrors"
 end
 
-local function writeFile(path, data)
-  ensureDir(fs.getDir(path))
-  local f = fs.open(path, "w")
-  if not f then return false, "cannot open "..path end
-  f.write(data) f.close()
-  return true
-end
-
-local function readVersions()
-  if fs.exists(MANIFEST) then
-    local f = fs.open(MANIFEST, "r"); local data = f.readAll(); f.close()
-    local ok, parsed = pcall(json.unserialize, data)
-    if ok and type(parsed)=="table" and type(parsed.list)=="table" then
-      return parsed.list, parsed.latest or parsed.list[#parsed.list]
-    end
-  end
-  return { "main" }, "main"
-end
-
 -- ---------- Core updater ----------
 local function fetchFile(repoRel, destRel, ver)
-  local data, e  = httpGet(nil, repoRel, ver)
-  if not data then error(e or ("Failed to download: "..tostring(repoRel))) end
+  local data, used  = httpGetPath(ver, repoRel)
+  if not data then error(("Failed to download '%s' for version '%s'"):format(tostring(repoRel), tostring(ver))) end
   local out = join(root, destRel or repoRel)
   local ok, e2 = writeFile(out, data)
   if not ok then error(e2) end
+  return used
 end
 
 local DEFAULT_FILES = { [ENTRY] = ENTRY }
 
 -- Download everything listed in install_manifest.txt (repo-side), else fallback to DEFAULT_FILES.
 local function downloadVersion(ver)
+  local last_used_url = nil
   ver = ver or "main"
   ensureDir(root)
-  local man, _ = httpGet(nil, "install_manifest.txt", ver)
+  local man, _ = httpGetPath(ver, "install_manifest.txt")
   if man then
     local n=0
     for line in man:gmatch("[^\r\n]+") do
       local rel = line:gsub("^%s+",""):gsub("%s+$","")
       if rel ~= "" and rel:sub(1,1) ~= "#" then
-        fetchFile(rel, rel, ver); n = n + 1
+        last_used_url = fetchFile(rel, rel, ver); n = n + 1
       end
     end
-    return true, ("Installed via manifest ("..n.." files)")
+    return true, ("Installed via manifest ("..n.." files)"), last_used_url
   else
     local n=0
     if not DEFAULT_FILES[ENTRY] then DEFAULT_FILES[ENTRY] = ENTRY end
-    for src, dst in pairs(DEFAULT_FILES) do fetchFile(src, dst, ver); n=n+1 end
-    return true, (ENTRY.." Installed "..n.." file(s) (fallback)")
+    for src, dst in pairs(DEFAULT_FILES) do last_used_url = fetchFile(src, dst, ver); n=n+1 end
+    return true, (ENTRY.." Installed "..n.." file(s) (fallback)"), last_used_url
   end
+end
+
+-- Extract version from installed PixelCorp.lua
+local function detectInstalledVersion()
+  local s = _readAll(join(root, ENTRY)); if not s then return nil end
+  local v = s:match('[Vv][Ee][Rr][Ss][Ii][Oo][Nn]%s*=%s*["\']([^"\']+)["\']')
+        or s:match('Version%s*[:=]%s*([%d%.]+)')
+        or s:match('PC[_-]?VERSION%s*=%s*["\']([^"\']+)["\']')
+  return v
 end
 
 -- Public API
@@ -264,7 +264,12 @@ function M.updateLatest(ver)
   if not http then return false, "HTTP API is disabled in CC config." end
   local ok, msg = pcall(function() return downloadVersion(ver) end)
   if ok then
-    return true, "Update completed"
+    local v = detectInstalledVersion()
+    if v then
+      return true, ("Update completed. Detected version: "..v)
+    else
+      return true, "Update completed (version unknown)"
+    end
   else
     return false, tostring(msg)
   end
