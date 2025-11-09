@@ -156,7 +156,6 @@ end
 -- =======================
 -- Settings Modal (Main)
 -- =======================
-local version = "0.2.0.5"
 local function openSettingsModal(parent)
   local W,H = term.getSize()
   local border = parent:addFrame():setSize(49,17):setPosition(2,2)
@@ -283,9 +282,8 @@ local function openSettingsModal(parent)
 
 do
   local meta = _readVersionMeta()
-  local cfg_ver = meta.installed_version or (version or "?")
   local cfg_ref = meta.installed_ref or updaterAPI.readSelected() or "main"
-  gv:addLabel():setText(("Installed: %s (%s)"):format(tostring(cfg_ver), tostring(cfg_ref)))
+  gv:addLabel():setText(("Game Version: (%s)"):format(tostring(cfg_ref)))
     :setPosition(2,10):setForeground(colors.gray)
 end
 
@@ -649,3 +647,4 @@ local function loadMainMenu()
 end
 
 loadMainMenu()
+
