@@ -72,6 +72,8 @@ local function _drawGlyph(frame, glyph, x, y, scale, color)
   end
 end
 
+
+
 local function drawBigText(frame, text, x, y, opts)
   opts = opts or {}
   local scale   = opts.scale or 1
@@ -105,6 +107,20 @@ local function drawBigText(frame, text, x, y, opts)
       cursor = cursor + ((5 + spacing) * scale)
     end
   end
+end
+
+local function measureBigText(text, opts)
+  opts = opts or {}
+  local scale   = opts.scale or 1
+  local spacing = opts.spacing or 1
+  local w = 0
+  for i = 1, #text do
+    local g = BIG[text:sub(i,i):upper()]
+    local gw = (g and #g[1]) or 5
+    w = w + gw + spacing
+  end
+  if #text > 0 then w = w - spacing end
+  return w * scale, 5 * scale
 end
 
 -- Backgrounds
@@ -368,6 +384,86 @@ end
           startFn()
         end)
     end
+
+    local function _readChangelogIndex()
+  -- look for /versions/changelog/*.txt (filename is version), else fallback to single file
+  local baseDir = root.."/versions/changelog"
+  local out = {}
+  if fs.exists(baseDir) and fs.isDir(baseDir) then
+    for _,p in ipairs(fs.list(baseDir)) do
+      local full = baseDir.."/"..p
+      if not fs.isDir(full) and p:match("%.txt$") then
+        local ver = p:gsub("%.txt$", "")
+        local f = fs.open(full, "r"); local s = f.readAll(); f.close()
+        out[#out+1] = { version = ver, text = s }
+      end
+    end
+  else
+    -- fallback: /versions/CHANGELOG.txt or /CHANGELOG.txt
+    local fall = root.."/versions/CHANGELOG.txt"
+    if not fs.exists(fall) then fall = root.."/CHANGELOG.txt" end
+    if fs.exists(fall) then
+      local f = fs.open(fall, "r"); local s = f.readAll(); f.close()
+      out[#out+1] = { version = (version or "current"), text = s }
+    end
+  end
+  -- newest first by simple semantic-ish sort
+  table.sort(out, function(a,b) return tostring(a.version) > tostring(b.version) end)
+  return out
+end
+
+local function openChangelogModal(parent)
+  local W,H = term.getSize()
+  local bw, bh = math.max(36, math.floor(W*0.7)), math.max(10, math.floor(H*0.6))
+  local bx, by = math.floor((W-bw)/2), math.floor((H-bh)/2)
+
+  local border = parent:addFrame():setSize(bw, bh):setPosition(bx, by)
+      :setBackground(colors.lightGray):setZIndex(45)
+  local f = border:addFrame():setSize(bw-2, bh-2):setPosition(1,1)
+      :setBackground(colors.white)
+
+  border:addButton():setText(" X ")
+    :setPosition(bw-4,1):setSize(3,1)
+    :setBackground(colors.red):setForeground(colors.white)
+    :onClick(function() border:remove() end)
+
+  f:addLabel():setText("Changelog"):setPosition(3,2):setForeground(colors.gray)
+
+  local listW = math.max(12, math.floor((bw-6)*0.35))
+  local list  = f:addList():setPosition(2,4):setSize(listW, bh-6)
+  local body  = f:addScrollableFrame():setPosition(3+listW,4):setSize(bw-5-listW, bh-6):setBackground(colors.white)
+
+  local items = _readChangelogIndex()
+  if #items == 0 then
+    body:addLabel():setText("No changelog available."):setPosition(1,1):setForeground(colors.gray)
+    return
+  end
+  for _,it in ipairs(items) do list:addItem(it.version) end
+
+  local function renderBody(text)
+    pcall(function() body:removeChildren() end)
+    local y = 1
+    for line in tostring(text or ""):gmatch("([^\n]*)\n?") do
+      body:addLabel():setText(line):setPosition(1, y):setForeground(colors.black)
+      y = y + 1
+    end
+  end
+
+  local function selectIndex(i)
+    local it = items[i]; if not it then return end
+    renderBody(it.text)
+  end
+
+  list:onChange(function(self)
+    local idx = self.getItemIndex and self:getItemIndex() or 1
+    selectIndex(idx)
+  end)
+
+  -- preselect first (newest)
+  if list.selectItem then list:selectItem(1) end
+  selectIndex(1)
+end
+
 
 local function loadMainMenu()
 
