@@ -49,6 +49,15 @@ local pauseMenu        = UI and UI.pauseMenu or pauseMenu
 
 local function Wipe(frame) if frame and frame.removeChildren then frame:removeChildren() end end
 
+local lastW, lastH = term.getSize()
+local function watchResize()
+  local w, h = term.getSize()
+  if w ~= lastW or h ~= lastH then
+    lastW, lastH = w, h
+    if uiAPI and uiAPI.reflow then uiAPI.reflow() end
+  end
+end
+
 -- =========
 -- Guide HUD
 -- =========
@@ -116,8 +125,14 @@ inventoryTabs["All"]       = inventoryOverlay:addScrollableFrame()
 -- ======
 -- Stock
 -- ======
-local STOCK_CATS  = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
-local STOCK_ORDER = { "base","fruit","sweet","topping" }
+local function _stockSchema()
+  if uiAPI and uiAPI.getStockSchema then
+    local order, labels = uiAPI.getStockSchema()
+    return order, labels
+  end
+  -- fallback (lemonade)
+  return {"base","fruit","sweet","topping"}, { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" }
+end
 local _stockCatIdx = 1
 local pageElements = { stock = {}, upgrades = {}, main = {}, development = {} }
 local function _rarityColor(it) return itemsAPI.itemRarityColor(it) end
@@ -249,7 +264,10 @@ local function populateProducts()
   local tab = inventoryTabs["Products"]; Wipe(tab); _mkHeaderProducts(tab)
   local y=2; for _, it in ipairs(safeGetProducts()) do
     local shown = it.label
-    if type(shown)=="string" and shown:find("^drink:") and craftAPI.prettyNameFromKey then shown = craftAPI.prettyNameFromKey(shown) end
+    if type(shown)=="string" then
+      if shown:find("^drink:") and craftAPI.prettyNameFromKey then shown = craftAPI.prettyNameFromKey(shown) end
+      if shown:find("^pack:")  and craftAPI.prettyNameFromKey then shown = craftAPI.prettyNameFromKey(shown) end
+    end
     local price = getProductPrice(it.key)
     _mkRowProduct(tab,y,_safeText(shown,28), it.qty, price); y=y+1
   end
@@ -258,7 +276,10 @@ local function populateAll()
   local tab = inventoryTabs["All"]; Wipe(tab); _mkHeader(tab)
   local y=2; for _, it in ipairs(safeGetAll()) do
     local shown = it.label or it.key
-    if type(shown)=="string" and shown:find("^drink:") and craftAPI.prettyNameFromKey then shown = craftAPI.prettyNameFromKey(shown) end
+    if type(shown)=="string" then
+      if shown:find("^drink:") and craftAPI.prettyNameFromKey then shown = craftAPI.prettyNameFromKey(shown) end
+      if shown:find("^pack:")  and craftAPI.prettyNameFromKey then shown = craftAPI.prettyNameFromKey(shown) end
+    end
     local price = getProductPrice(it.label or it.key)
     local tag = (it.type=="material") and "M" or "P"
     _mkRow(tab,y,_safeText(("["..tag.."] "..shown),26), it.qty, it.base or price, it.color); y=y+1
@@ -303,6 +324,7 @@ local function spawnGroundCash(x, y)
     local amt = LOOT.ground.amt()
     if economyAPI and economyAPI.addMoney then economyAPI.addMoney(amt, "Found cash") end
     uiAPI.toast("displayFrame", ("Found $"..amt), 20, 17, colors.yellow, 1.5)
+    economyAPI.recordGain("Misc Gains", amt, "found")
     uiAPI.refreshBalances()
   end)
 end
@@ -698,12 +720,10 @@ local function rebuildUpgradesPage()
   _clearGroup("upgrades")
   local y=4
   local Lvl = (levelAPI.getLevel and levelAPI.getLevel()) or 1
-  if upgradeAPI.isVisibleAtLevel("seating",    Lvl) then buildUpgradeRow("seating",    y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("marketing",  Lvl) then buildUpgradeRow("marketing",  y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("awning",     Lvl) then buildUpgradeRow("awning",     y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("exp_boost",  Lvl) then buildUpgradeRow("exp_boost",  y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("ice_shaver", Lvl) then buildUpgradeRow("ice_shaver", y); y=y+2 end
-  if upgradeAPI.isVisibleAtLevel("juicer",     Lvl) then buildUpgradeRow("juicer",     y); y=y+2 end
+  local keys = (upgradeAPI.stageKeys and upgradeAPI.stageKeys()) or {"seating","marketing","awning","exp_boost","ice_shaver","juicer"}
+  for _, key in ipairs(keys) do
+    if upgradeAPI.isVisibleAtLevel(key, Lvl) then buildUpgradeRow(key, y); y=y+2 end
+  end
 end
 
 -- ==================
@@ -941,9 +961,12 @@ end)
 -- ==============
   _didDailyStockRefresh = false
   local save = false
+  local _didDailyInterest = false
 
 function refreshUI()
   local t = timeAPI.getTime()
+  watchResize()
+  uiAPI.updateSpeedButtons()
   uiAPI.setHUDTime(string.format("Time: Y%d M%d D%d %02d:%02d", t.year, t.month, t.day, t.hour, t.minute))
 
   pcall(function() if uiAPI._refreshSkipOr4x then uiAPI._refreshSkipOr4x() end end)
@@ -957,7 +980,19 @@ function refreshUI()
         pcall(function() if inventoryAPI.rollDailyMarket then inventoryAPI.rollDailyMarket() end end)
         pcall(function() if inventoryAPI.refreshMarket then inventoryAPI.refreshMarket() end end)
         pcall(function() if inventoryAPI.reseedDailyStock then inventoryAPI.reseedDailyStock() end end)
+        uiAPI.toast(displayFrame, "Stock Refreshed!", 16, 4, colors.blue, 1.2)
       end
+    if not _didDailyInterest then
+      _didDailyInterest = true
+      pcall(function()
+        if economyAPI and economyAPI.accrueSavingsInterest then
+          economyAPI.accrueSavingsInterest()
+        end
+      end)
+      pcall(function() if uiAPI and uiAPI.refreshBalances then uiAPI.refreshBalances() end end)
+      pcall(function() if uiAPI and uiAPI.renderDailyCard then uiAPI.renderDailyCard(displayFrame) end end)
+      uiAPI.toast(displayFrame, "Savings interest posted", 16, 5, colors.green, 1.2)
+    end
       if currentPage == "stock" then pcall(function() if uiAPI.softRefreshStockLabels then uiAPI.softRefreshStockLabels() end end) end
       uiAPI.softRefreshStockLabels()
       if uiAPI and uiAPI.runLater then
@@ -968,6 +1003,7 @@ function refreshUI()
     end
     else
     _didDailyStockRefresh = false
+    _didDailyInterest = false
   end
   if hour == 7 then
     if not _didDailyLoanCharge then
