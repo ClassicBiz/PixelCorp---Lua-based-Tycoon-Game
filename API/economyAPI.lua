@@ -98,11 +98,26 @@ end
 
 function economyAPI.dayIndex(t) return _dayIndex(t or saveAPI.get().time) end
 
+
+local function _purgeOldLedger(s, di)
+  s.finance = s.finance or {}
+  s.finance.ledger = s.finance.ledger or {}
+  if s.finance._ledger_day ~= di then
+    s.finance.ledger = {}
+    s.finance._ledger_day = di
+  else
+    for k,_ in pairs(s.finance.ledger) do
+      if k ~= di then s.finance.ledger[k] = nil end
+    end
+  end
+end
+
 local function _ledger()
   local s = saveAPI.get()
   s.finance = s.finance or {}
   s.finance.ledger = s.finance.ledger or {}
   local di = _dayIndex(s.time)
+  _purgeOldLedger(s, di)
   s.finance.ledger[di] = s.finance.ledger[di] or { entries = {}, sums = {gains=0, expenses=0} }
   return s.finance.ledger[di], di, s
 end
@@ -126,17 +141,20 @@ end
 function economyAPI.recordSale(amount, label)
   _addEntry("sale", amount, {item=label}, true)
 end
+function economyAPI.recordGain(kind, amount, label)
+  _addEntry(kind or "gain", amount, {item=label}, true)
+end
 function economyAPI.recordExpense(kind, amount, meta)
   _addEntry(kind or "expense", amount, meta, false)
 end
 function economyAPI.recordSavingsDeposit(amount)
-  _addEntry("savings_deposit", amount, nil, false)
+  _addEntry("savings_deposit", amount, "savings_deposit", false)
 end
 function economyAPI.recordSavingsWithdraw(amount)
-  _addEntry("savings_withdraw", amount, nil, true)
+  _addEntry("savings_withdraw", amount, "savings_withdraw", true)
 end
 function economyAPI.recordSavingsInterest(amount)
-  _addEntry("savings_interest", amount, nil, true)
+  _addEntry("bank_interest", amount, "savings_interest", true)
 end
 function economyAPI.todaysTotals()
   local L = select(1, _ledger())
@@ -447,11 +465,11 @@ end
 -- ===== Bank =====
 local function _ensureBank()
   local s = saveAPI.get()
-  s.finance = s.finance or {}
+  s.economy = s.economy or {}
+  s.economy.bank = s.economy.bank or { savings = 0, last_interest_day = 0, interest_rate_daily = 0 }
   local daily = (settingsAPI.bankDailyRate and settingsAPI.bankDailyRate()) or 0.003
-  s.finance.bank = s.finance.bank or { savings = 0, last_interest_day = 0, interest_rate_daily = daily }
-  s.finance.bank.interest_rate_daily = daily
-  return s.finance.bank, s
+  s.economy.bank.interest_rate_daily = daily
+  return s.economy.bank, s
 end
 
 local function _bankDayIndex(t)
@@ -467,19 +485,19 @@ function economyAPI.accrueSavingsInterest()
   local nowIdx = _bankDayIndex(s.time)
   if (B.last_interest_day or 0) == nowIdx then return false end
 
-  local activeLoan = false
-  for _,L in ipairs(economyAPI.listLoans()) do if (L.remaining_principal or 0) > 0 then activeLoan = true; break end end
-
-  if not activeLoan then
     local r = tonumber(B.interest_rate_daily or 0.0) or 0.0
-    if r > 0 and (B.savings or 0) > 0 then
-      local add = math.floor((B.savings * r) + 0.5)
-      if add > 0 then B.savings = B.savings + add end
-      economyAPI.recordSavingsInterest(add)
+    local bal = tonumber(B.savings or 0) or 0
+    if r > 0 and bal > 0 then
+      local add = math.floor((bal * r) + 0.5)
+      if add > 0 then
+        B.savings = bal + add
+        economyAPI.recordSavingsInterest(add)
+      end
     end
-  end
 
-  B.last_interest_day = nowIdx; saveAPI.save(); return true
+  B.last_interest_day = nowIdx
+  saveAPI.save()
+  return true
 end
 
 function economyAPI.getBankBalances()

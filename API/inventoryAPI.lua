@@ -136,6 +136,27 @@ function inventoryAPI.add(item, amount)
     return inv[item]
 end
 
+function inventoryAPI.resetForStage(stageKey)
+  local s = saveAPI.get()
+  s.player = s.player or {}
+  s.player.inventory = s.player.inventory or {}
+  local inv = s.player.inventory
+  local known = {}
+  for _, it in ipairs(itemsAPI.getAll()) do
+    known[it.id] = true
+  end
+  for id,_ in pairs(inv) do
+    inv[id] = 0
+  end
+  for k,_ in pairs(inv) do
+    if not known[k] then inv[k] = 0 end
+  end
+  s.market = { stock = {}, prices = {}, last_stock_day = -9999, last_price_weekbuck = -9999 }
+  s.economy = s.economy or {}; s.economy.prices = {}
+
+  saveAPI.save(s)
+end
+
 function inventoryAPI.getAvailableStock()
   _refreshMarketIfNeeded()
   local s = saveAPI.get(); s.market = s.market or {}; s.market.stock = s.market.stock or {}

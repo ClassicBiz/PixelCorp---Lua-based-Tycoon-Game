@@ -26,7 +26,13 @@ local function cyield()
 end
 
 local cache_by_path = {}
-local frameSegments = {} 
+local frameSegments = {}
+
+function backgroundAPI.measure(path)
+  local info = cache_by_path[path]
+  if not info then return nil, nil end
+  return info.w or 0, info.h or 0
+end
 
 local function readRows(path)
   local fh = fs.open(path, "r")

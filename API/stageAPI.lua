@@ -27,6 +27,24 @@ local STAGE_BG = {
   tower    = root.."/assets/tower.nfp",
 }
 
+
+ stageAPI.STAGES = {
+  lemonade = {
+    key="lemonade",
+    stock_order = {"base","fruit","sweet","topping"},
+    stock_labels = { base="Cups", fruit="Fruit", sweet="Sweetener", topping="Toppings" },
+    crafting = { productType="drink", slots={"base","fruit","sweet","topping"} },
+    interact = { pickups = {"bush","tree","ground"} }
+  },
+  warehouse = {
+    key="warehouse",
+    stock_order = {"container","cushion","accessory","product"},
+    stock_labels = { container="Container", cushion="Cushion", accessory="Accessory", product = "product" },
+    crafting = { productType="pack", slots={"container","cushion","accessory","product"} },
+    interact = { pickups = {"crate","pallet"} }
+  }
+}
+
 -- Ensure unlocks table
 local function _ensure()
   local s = saveAPI.get()
@@ -66,11 +84,20 @@ function stageAPI.refreshBackground(frame)
   local path = STAGE_BG[s.stage] or STAGE_BG.base
   local ok, err = pcall(function()
     backgroundAPI.preload(path)
-    backgroundAPI.setCachedBackground(frame, path, 1, 1)
+
+    local fw, fh = 1, 1
+    if frame and frame.getSize then fw, fh = frame:getSize() end
+    local iw, ih = backgroundAPI.measure(path)
+    iw, ih = iw or 0, ih or 0
+
+    -- center the image inside the frame (fall back to 1,1)
+    local ox = math.max(1, math.floor((fw - iw) / 2) + 1)
+    local oy = math.max(1, math.floor((fh - ih) / 2) + 1)
+
+    backgroundAPI.setCachedBackground(frame, path, ox, oy)
   end)
   if not ok then
     print("stageAPI: failed to set background: "..tostring(err))
-    os.sleep(5)
   end
 end
 

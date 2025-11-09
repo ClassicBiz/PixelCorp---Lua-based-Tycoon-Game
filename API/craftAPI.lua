@@ -69,7 +69,25 @@ local function _composeProductKey(productType, baseId, fruitId, sweetId, topId)
     :format(t, nz(baseId), nz(fruitId), nz(sweetId), nz(topId))
 end
 
+local function _prettyFromPackKey(key)
+  local t, cont, cush, acc = key:match("^pack:(.-)|container=(.-)|cushion=(.-)|acc=(.-)$")
+  if not t then return nil end
+
+  local function name(id)
+    if not id or id == "none" then return nil end
+    return itemsAPI.nameById(id) or id
+  end
+
+  local parts = {}
+  if cont and cont ~= "none" then table.insert(parts, itemsAPI.aliasById(cont) or name(cont)) end
+  if acc  and acc  ~= "none" then table.insert(parts, itemsAPI.aliasById(acc)  or name(acc))  end
+  table.insert(parts, "Pack")
+  return table.concat(parts, " ")
+end
+
 function craftAPI.prettyNameFromKey(key)
+  local drink = key:match("^drink:")
+  if drink then
   local t, b, f, s, tp = key:match("^drink:(.-)|base=(.-)|fruit=(.-)|sweet=(.-)|top=(.-)$")
   if not t then return key end
 
@@ -92,7 +110,13 @@ function craftAPI.prettyNameFromKey(key)
   local topName     = name(tp)
 
   return craftAPI.generateProductName(fruitName, sweetName, topName, productType)
+    else
+    local pretty = _prettyFromPackKey(key)
+    if pretty then return pretty end
+    return key
+  end
 end
+
 
 local function labelToKey(label)
   if not label or label == "" then return nil end

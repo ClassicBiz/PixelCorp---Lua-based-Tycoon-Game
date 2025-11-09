@@ -13,6 +13,7 @@ end
 local root = getRoot()
 local saveAPI   = require(root.."/API/saveAPI")
 local settingsOK, settingsAPI = pcall(require, root.."/API/settingsAPI")
+local economyAPI = require(root.."/API/economyAPI")
 
 
 U.catalog = {
@@ -34,6 +35,22 @@ U.catalog.exp_boost = {
     return math.floor(base * (1.8 ^ (lvl)))
   end
 }
+
+U.stageCatalogs = {
+  lemonade_stand = U.catalog,
+  warehouse = {
+    shelving     = { level_cap=5,  one_time=false, min_level=55,  req_levels={55,60,65,70,75}, cost=function(l) return 100 + 120*l end },
+    pallet_jack  = { level_cap=1,  one_time=true,  min_level=65,                              cost=function(_) return 450 end },
+    forklift     = { level_cap=1,  one_time=true,  min_level=62,                             cost=function(_) return 2200 end },
+    loading_dock = { level_cap=3,  one_time=false, min_level=59, req_levels={59,70,80},      cost=function(l) return 600 + 400*l end },
+    exp_boost    = U.catalog.exp_boost,
+  }
+}
+
+local _activeStage = "lemonade_stand"
+local function _activeCatalog()
+  return U.stageCatalogs[_activeStage] or U.catalog
+end
 
 -- ---- Storage helpers ----
 local function _state()
@@ -66,7 +83,7 @@ function U.minLevel(key)
 end
 
 function U.canPurchase(key)
-  local def = U.catalog[key]; if not def then return false, "Unknown upgrade" end
+  local def = _activeCatalog()[key]
   local u = _state()
 
   local playerL = _playerLevel()
@@ -94,7 +111,7 @@ function U.canPurchase(key)
 end
 
 function U.cost(key)
-  local def = U.catalog[key]; if not def then return 0 end
+  local def = _activeCatalog()[key]
   local lvl = U.level(key)
   local base = def.cost(lvl)
   local scale = 1.0
@@ -120,8 +137,29 @@ function U.purchase(key, spendFn)
   end
 
   saveAPI.save()
+  economyAPI.recordExpense("upgrade", tonumber(c), tostring(def))
   return true, (def.one_time and "Purchased" or ("Level "..tostring(u[key])))
 end
+
+function U.setStage(progressKey)
+  _activeStage = tostring(progressKey or "lemonade_stand")
+end
+
+-- Swap all reads to use active catalog
+function U.isVisibleAtLevel(key, playerLevel)
+  local def = _activeCatalog()[key]; if not def then return false end
+  local minL = def.min_level or 1
+  return (playerLevel or 1) >= minL
+end
+
+function U.catalogKeys()
+  local keys = {}
+  for k,_ in pairs(_activeCatalog()) do table.insert(keys, k) end
+  table.sort(keys)
+  return keys
+end
+function U.stageKeys() return U.catalogKeys() end
+
 
 -- ======= Game effect helpers =======
 function U.expBoostFactor()
@@ -157,11 +195,6 @@ function U.allowShavedIceSubstitution()
 end
 
 -- Shown/hidden in UI by level
-function U.isVisibleAtLevel(key, playerLevel)
-  local def = U.catalog[key]; if not def then return false end
-  local minL = def.min_level or 1
-  return (playerLevel or 1) >= minL
-end
 
 function U.nextEffectLabel(key)
   local lvlNext = U.level(key) + 1
@@ -171,7 +204,7 @@ function U.nextEffectLabel(key)
   if key == "ice_shaver" then return "Unlock: Shaved Ice crafting" end
   if key == "juicer"     then return "Fruit req −1 (crafting)" end
   if key == "exp_boost"  then
-    local def = U.catalog.exp_boost
+    local def = _activeCatalog()
     local m = def.multipliers[lvlNext] or def.multipliers[#def.multipliers]
     return ("XP boost x%.2f"):format(m)
   end

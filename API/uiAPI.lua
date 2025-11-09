@@ -64,6 +64,18 @@ function M.progressToArt(progress)
   else return "base" end
 end
 
+-- Stage-driven UI/Crafting profiles
+
+
+function M.currentStageProfile()
+  local s = saveAPI.get() or {}; s.player = s.player or {}
+  local progress = s.player.progress or "odd_jobs"
+  local art = M.progressToArt(progress)
+  if art == "office" then return stageAPI.STAGES.warehouse end
+  if art == "lemonade" then return stageAPI.STAGES.lemonade end
+  return stageAPI.STAGES.lemonade -- default until more are added
+end
+
 -- === World Interaction Helpers =========================================
 local ActivePickups = { set = {}, count = 0 }
 
@@ -319,9 +331,9 @@ function M.refreshDevStage()
       saveAPI.setState(state)
       local artKey = M.progressToArt(def.next)
       if M._onStageChanged then pcall(function() M._onStageChanged(def.next) end) end
-        if stageAPI.setStage then stageAPI.setStage(artKey) end
-        stageAPI.refreshBackground(M.refs.displayFrame)
-      M.toast("displayFrame","Stage unlocked!",18,5,colors.green,1.2)
+      if stageAPI.setStage then stageAPI.setStage(artKey) end
+      stageAPI.refreshBackground(M.refs.displayFrame)
+      M.toast(displayFrame,"Stage unlocked!",18,5,colors.green,1.2)
       M.refreshDevStage()
       pcall(function() if refreshUI then refreshUI() end end)
       _stgBusy=false
@@ -413,6 +425,11 @@ end
 
 function M.killMain()
   _clearMain()
+end
+
+function M.getStockSchema()
+  local P = M.currentStageProfile()
+  return (P.stock_order or {}), (P.stock_labels or {})
 end
 
 -- ===== Stock Page =====
@@ -635,18 +652,16 @@ function M.hideLoading()
 end
 
 
-function M.openDailyReport(period)
-  period = tostring(period or "day"):lower()
-  local function getTotals(which)
-    if which == "day" and economyAPI.todaysTotals then return economyAPI.todaysTotals() end
-    if economyAPI.periodTotals then
-      local ok, res = pcall(economyAPI.periodTotals, which)
-      if ok and type(res) == "table" then return res end
+function M.openDailyReport()
+  local function getTotals()
+    if economyAPI.todaysTotals then
+      return economyAPI.todaysTotals()
     end
     return { gains=0, expenses=0, net=0, entries={} }
   end
+
   local SECTION_ORDER_GAIN  = { "Sales", "Bank", "Loans", "Misc Gains" }
-  local SECTION_ORDER_EXP   = { "Materials", "Upgrades", "Licenses", "Marketing", "Wages", "Loans", "Bank", "Misc Exp" }
+  local SECTION_ORDER_EXP   = { "Materials", "Upgrades", "Licenses", "Loans", "Bank", "Misc Exp" }
 
   local function classify(e)
     local k = tostring(e.kind or "txn")
@@ -656,7 +671,9 @@ function M.openDailyReport(period)
     if k == "sale" or k == "tip" then
       return "Sales", (item or k), "gain"
     elseif k == "interest" or k == "bank_interest" then
-      return "Bank", "Savings interest", "gain"
+      return "Bank", "interest", "gain"
+    elseif k == "bank" or k == "savings_withdraw" then
+      return "Bank", (m.type or "Savings Withdraw"), "gain"
     elseif k == "loan_principal" or k == "loan_taken" then
       return "Loans", "Loan proceeds", "gain"
     elseif e.gain == true then
@@ -669,18 +686,15 @@ function M.openDailyReport(period)
       return "Upgrades", (m.upgrade or item or "upgrade"), "expense"
     elseif k == "license" then
       return "Licenses", (m.license or item or "license"), "expense"
-    elseif k == "marketing" then
-      return "Marketing", (m.campaign or item or "marketing"), "expense"
-    elseif k == "wage" or k == "staff" then
-      return "Wages", (m.role or "staff"), "expense"
     elseif k == "loan_payment" then
       return "Loans", "Loan payment", "expense"
-    elseif k == "bank" then
-      return "Bank", (m.type or "bank"), "expense"
+    elseif k == "bank" or k == "savings_deposit" then
+      return "Bank", (m.type or "Savings Deposit"), "expense"
     else
       return "Misc Exp", (item or k), "expense"
     end
   end
+
   local function aggregate(entries)
     local G, E = {}, {}
     local function add(tbl, sec, row, amt)
@@ -693,8 +707,8 @@ function M.openDailyReport(period)
     end
     for _, e in ipairs(entries or {}) do
       local sec, row, side = classify(e)
-      if side == "gain" then add(G, sec, row,  tonumber(e.amount or 0) or 0)
-      else                   add(E, sec, row,  tonumber(e.amount or 0) or 0) end
+      if side == "gain" then add(G, sec, row, tonumber(e.amount or 0) or 0)
+      else                   add(E, sec, row, tonumber(e.amount or 0) or 0) end
     end
     return G, E
   end
@@ -711,32 +725,30 @@ function M.openDailyReport(period)
     :setPosition(W-8,1):setSize(3,1)
     :setBackground(colors.red):setForeground(colors.white)
     :onClick(function() border:hide(); border:remove() end)
+    local t = timeAPI.getTime()
+  box:addLabel():setText("Finance Report for Y "..t.year.." M "..t.month.." Day "..t.day)
+    :setPosition(math.floor((W-4)/2)-10,1):setForeground(colors.gray)
 
-  box:addLabel():setText("Finance Report"):setPosition(math.floor((W-4)/2)-6,1):setForeground(colors.gray)
-
-  local tabs = box:addMenubar():setPosition(2,2):setSize(20,1):setScrollable(false)
-    :addItem(" Day "):addItem(" Month "):addItem(" Year ")
-  local function tabIndexFor(p) return (p=="day" and 1) or (p=="month" and 2) or 3 end
-  if tabs.selectItem then tabs:selectItem(tabIndexFor(period)) end
-
-  local gainsLbl   = box:addLabel():setPosition(W-26,2):setForeground(colors.green)
-  local expenseLbl = box:addLabel():setPosition(W-26,3):setForeground(colors.red)
-  local netLbl     = box:addLabel():setPosition(W-26,4)
+  local gainsLbl   = box:addLabel():setPosition(2,2):setForeground(colors.green)
+  local expenseLbl = box:addLabel():setPosition(17,2):setForeground(colors.red)
+  local netLbl     = box:addLabel():setPosition(33,2)
 
   local left  = box:addScrollableFrame():setPosition(2,4):setSize(math.floor((W-6)/2), H-9):setBackground(colors.white)
-  local right = box:addScrollableFrame():setPosition(2 + math.floor((W-6)/2),5):setSize(math.ceil((W-6)/2), H-9):setBackground(colors.white)
+  local right = box:addScrollableFrame():setPosition(2 + math.floor((W-6)/2),4):setSize(math.ceil((W-6)/2), H-9):setBackground(colors.white)
 
   local function render()
     pcall(function() left:removeChildren() end)
     pcall(function() right:removeChildren() end)
 
-    local t = getTotals(period)
+    local t = getTotals()
     local net = tonumber(t.net or ((t.gains or 0) - (t.expenses or 0))) or 0
     gainsLbl:setText(("Gains:    $%d"):format(tonumber(t.gains or 0) or 0))
     expenseLbl:setText(("Expenses: $%d"):format(tonumber(t.expenses or 0) or 0))
     netLbl:setText(string.format("Net: %s$%d", net>=0 and "+" or "-", math.abs(net)))
       :setForeground(net>=0 and colors.green or colors.red)
+
     local G, E = aggregate(t.entries or {})
+
     local function renderSection(parent, title, secData, color, y)
       parent:addLabel():setText((" %s "):format(title))
         :setPosition(1, y):setForeground(colors.black):setBackground(colors.white)
@@ -764,6 +776,7 @@ function M.openDailyReport(period)
         :setPosition(1, y):setForeground(color); y = y + 2
       return y
     end
+
     local yL = 1
     for _, sec in ipairs(SECTION_ORDER_GAIN) do
       yL = renderSection(left, sec, G[sec], colors.green, yL)
@@ -773,11 +786,6 @@ function M.openDailyReport(period)
       yR = renderSection(right, sec, E[sec], colors.red, yR)
     end
   end
-  tabs:onChange(function(self)
-    local idx = self.getItemIndex and self:getItemIndex() or 1
-    period = (idx==1 and "day") or (idx==2 and "month") or "year"
-    render()
-  end)
 
   render()
 end
@@ -787,37 +795,32 @@ function M.createBaseLayout()
   local W, H = term.getSize()
   local mainFrame = basalt.createFrame():setSize(W, H)
 
-  local topBar = mainFrame:addFrame()
-      :setSize(W, 3)
-      :setPosition(1, 1)
-      :setBackground(colors.gray)
-      :hide()
+  -- core containers (no hardcoded positions; layout() will place them)
+  local topBar        = mainFrame:addFrame():setBackground(colors.gray):hide()
+  local displayFrame  = mainFrame:addFrame():setZIndex(0):hide()
+  local inventoryOverlay = mainFrame:addMovableFrame()
+      :setBackground(colors.lightGray):setZIndex(45):hide()
 
-  local displayFrame = mainFrame:addFrame()
-      :setSize(W+1, H - 2)
-      :setPosition(0, 3)
-      :setZIndex(0)
-      :hide()
+  -- nav mode (sidebar or dropdown)
+  local mode  = tostring((settingsAPI and settingsAPI.navMode and settingsAPI.navMode()) or "sidebar")
+  local sidebar, navDD
 
-          local mode = tostring((settingsAPI and settingsAPI.navMode and settingsAPI.navMode()) or "sidebar")
   if mode == "sidebar" then
-
-    local SIDEBAR_W = 16
     sidebar = mainFrame:addScrollableFrame()
-        :setBackground(colors.lightGray)
-        :setPosition(W, 4)
-        :setSize(SIDEBAR_W, H - 3)
-        :setZIndex(25)
-        :setDirection("vertical")
+      :setBackground(colors.lightGray)
+      :setZIndex(25)
+      :setDirection("vertical")
 
-    local function _sidebarExpandedX() return W - (SIDEBAR_W - 1) end
+    -- dynamic slide positions (computed in layout using current W/H)
+    local SIDEBAR_W = 16
+    local function _sidebarExpandedX() return math.max(1, W - (SIDEBAR_W - 1)) end
     local function _sidebarHiddenX()   return W end
-
 
     function M.openSidebar()
       if not sidebar then return end
       sidebar:setPosition(_sidebarExpandedX(), 4)
-          local closeBtn = sidebar:addButton()
+      -- add a one-off close button (safe to add multiple; latest will sit on top)
+      sidebar:addButton()
         :setText(">")
         :setPosition(1, 1)
         :setSize(1, 17)
@@ -825,11 +828,10 @@ function M.createBaseLayout()
         :setForeground(colors.black)
         :onClick(function() M.closeSidebar() end)
     end
-
     function M.closeSidebar()
       if not sidebar then return end
       sidebar:setPosition(_sidebarHiddenX(), 4)
-        local openBtn = sidebar:addButton()
+      sidebar:addButton()
         :setText("<")
         :setPosition(1, 1)
         :setSize(1, 17)
@@ -837,66 +839,46 @@ function M.createBaseLayout()
         :setForeground(colors.black)
         :onClick(function() M.openSidebar() end)
     end
+    if sidebar.onGetFocus then
+      sidebar:onGetFocus(function() M.openSidebar() end)
+      sidebar:onLoseFocus(function() M.closeSidebar() end)
+    end
 
-    sidebar:onGetFocus(function(self)
-      M.openSidebar()
-    end)
-    sidebar:onLoseFocus(function(self)
-      M.closeSidebar()
-    end)
+    -- stash for layout() to size later
+    M.refs.sidebar = sidebar
   else
-      navDD = displayFrame:addDropdown()
-        :setPosition(2, 2)
-        :setSize(14, 1)
-        :setBackground(colors.lightBlue)
-        :setForeground(colors.black)
-        :setSelectionColor(colors.white, colors.cyan)
-                :setZIndex(25)
+    navDD = displayFrame:addDropdown()
+      :setBackground(colors.lightBlue)
+      :setForeground(colors.black)
+      :setSelectionColor(colors.white, colors.cyan)
+      :setZIndex(25)
+    M.refs.navDD = navDD
   end
-  local inventoryOverlay = mainFrame:addMovableFrame()
-      :setSize(42, 16)
-      :setPosition((W - 40) / 2, 3)
-      :setBackground(colors.lightGray)
-      :setZIndex(45)
-      :hide()
-  inventoryOverlay:addLabel():setText("Inventory"):setPosition(2, 1)
-  inventoryOverlay:addButton()
+
+  -- inventory overlay chrome
+    local invTitle = inventoryOverlay:addLabel():setText("Inventory"):setPosition(2, 1)
+
+    local invClose = inventoryOverlay:addButton()
       :setText(" x ")
-      :setPosition(40, 1)
       :setSize(3, 1)
       :setBackground(colors.red)
       :setForeground(colors.white)
       :onClick(function() inventoryOverlay:hide() end)
 
-  local timeLabel  = topBar:addLabel():setText("Time: --"):setPosition(2, 1)
-  local moneyLabel = topBar:addLabel():setText("Money: $0"):setPosition(32, 2)
-  local stageLabel = topBar:addLabel():setText("Stage: --"):setPosition(25, 1)
-  local moneyPlus = topBar:addButton():setText("Bank"):setPosition(27,2):setSize(4,1):setBackground(colors.gray):setForeground(colors.green)
-  :onClick(function()
-    if M.openFinanceModal then M.openFinanceModal() end
-    if M._onMoneyPlus then pcall(M._onMoneyPlus) end
-  end)
-  local levelLabel = topBar:addLabel():setText("lvl 1"):setPosition(1,3):setForeground(colors.yellow)
-  local levelBarLabel = topBar:addLabel():setText("|----------| 0%"):setPosition(7,3):setForeground(colors.blue)
+  -- top bar HUD
+  local timeLabel   = topBar:addLabel():setText("Time: --")
+  local stageLabel  = topBar:addLabel():setText("Stage: --")
+  local moneyLabel  = topBar:addLabel():setText("Money: $0")
+  local moneyPlus   = topBar:addButton():setText("Bank")
+      :setBackground(colors.gray):setForeground(colors.green)
+      :onClick(function()
+        if M.openFinanceModal then M.openFinanceModal() end
+        if M._onMoneyPlus then pcall(M._onMoneyPlus) end
+      end)
+  local levelLabel      = topBar:addLabel():setText("lvl 1"):setForeground(colors.yellow)
+  local levelBarLabel   = topBar:addLabel():setText("|----------| 0%"):setForeground(colors.blue)
 
-  function M.updateSpeedButtons()
-    local speedButtons = M.refs.speedButtons or {}
-    local current = timeAPI.getSpeed()
-    for mode, btn in pairs(speedButtons) do
-      if mode == current then
-        if mode == "pause" then btn:setBackground(colors.red)
-        elseif mode == "normal" then btn:setBackground(colors.green)
-        elseif mode == "2x" then btn:setBackground(colors.blue)
-        elseif mode == "4x" then btn:setBackground(colors.orange)
-        end
-        btn:setForeground(colors.white)
-      else
-        btn:setBackground(colors.lightGray):setForeground(colors.gray)
-      end
-    end
-  end
-
-  local function updateSpeedButtonColors(speedButtons)
+    local function updateSpeedButtonColors(speedButtons)
     local current = timeAPI.getSpeed()
     for mode, btn in pairs(speedButtons) do
       if mode == current then
@@ -914,6 +896,22 @@ function M.createBaseLayout()
   end
 
   
+    function M.updateSpeedButtons()
+    local speedButtons = M.refs.speedButtons or {}
+    local current = timeAPI.getSpeed()
+    for mode, btn in pairs(speedButtons) do
+      if mode == current then
+        if mode == "pause" then btn:setBackground(colors.red)
+        elseif mode == "normal" then btn:setBackground(colors.green)
+        elseif mode == "2x" then btn:setBackground(colors.blue)
+        elseif mode == "4x" then btn:setBackground(colors.orange)
+        end
+        btn:setForeground(colors.white)
+      else
+        btn:setBackground(colors.lightGray):setForeground(colors.gray)
+      end
+    end
+  end
   local speedButtons = {}
   speedButtons["pause"] = topBar:addButton():setText("II"):setPosition(W - 44, 2):setSize(4,1)
       :onClick(function() timeAPI.setSpeed("pause"); updateSpeedButtonColors(speedButtons) end)
@@ -951,102 +949,123 @@ function M.createBaseLayout()
     refreshRightBtn()
   end
 
-  local function updateSpeedButtonColors(speedButtons)
-    refreshRightBtn()
-    local current = timeAPI.getSpeed()
-    for mode, btn in pairs(speedButtons) do
-      if mode == current then
-        if mode == "pause" then btn:setBackground(colors.red)
-        elseif mode == "normal" then btn:setBackground(colors.green)
-        elseif mode == "2x" then btn:setBackground(colors.blue)
-        elseif mode == "4x" then btn:setBackground(colors.orange)
-        elseif mode == "skip" then btn:setBackground(colors.purple or colors.blue)
-        end
-        btn:setForeground(colors.white)
-      else
-        btn:setBackground(colors.lightGray):setForeground(colors.gray)
-      end
-    end
-  end
 
-  updateSpeedButtonColors(speedButtons)
-  M.updateSpeedButtons = function()
-    updateSpeedButtonColors(speedButtons)
-  end
+  -- Pause menu (positions sized in layout)
+  local borderMenu = mainFrame:addFrame():setBackground(colors.lightGray):hide()
+  local pauseMenu  = borderMenu:addFrame():setBackground(colors.white):setZIndex(50)
+  pauseMenu:addLabel():setText("[--------------------------]"):setPosition(1, 1):setForeground(colors.black)
+  pauseMenu:addLabel():setText("Pause Menu"):setPosition(10, 1):setForeground(colors.gray)
+
+  local function showPause() borderMenu:show(); pauseMenu:show() end
+  local function hidePause() borderMenu:hide();  pauseMenu:hide() end
+
+  local pauseResumeBtn = pauseMenu:addButton()
+    :setText("Resume"):setBackground(colors.green):setForeground(colors.white)
+    :onClick(function() hidePause(); if M._onPauseResume then M._onPauseResume() end end)
+  local pauseSaveBtn = pauseMenu:addButton()
+    :setText("Save Game"):setBackground(colors.blue):setForeground(colors.white)
+    :onClick(function() if M._onPauseSave then M._onPauseSave() end end)
+  local pauseLoadBtn = pauseMenu:addButton()
+    :setText("Load Game"):setBackground(colors.yellow):setForeground(colors.white)
+    :onClick(function() if M._onPauseLoad then M._onPauseLoad() end end)
+  local guideBtn = pauseMenu:addButton()
+    :setText("Guide"):setBackground(colors.lightBlue):setForeground(colors.white)
+    :onClick(function() if guideAPI and guideAPI.show then guideAPI.show() end end)
+  local pauseQuitBtn = pauseMenu:addButton()
+    :setText("Quit to Main Menu"):setBackground(colors.red):setForeground(colors.white)
+    :onClick(function() if M._onPauseQuitToMenu then M._onPauseQuitToMenu() end end)
 
   local pauseBtn = topBar:addButton()
       :setText("Pause")
-      :setPosition(W - 50, 2)
-      :setSize(6, 1)
       :setBackground(colors.red)
       :setForeground(colors.white)
+      :onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen() end end)
 
-  local borderMenu = mainFrame:addFrame()
-      :setSize(30, 14)
-      :setPosition((W - 30) / 2, 5)
-      :setBackground(colors.lightGray)
-      :hide()
-
-  local pauseMenu = borderMenu:addFrame()
-      :setSize(28, 12)
-      :setPosition(2, 2)
-      :setBackground(colors.white)
-      :setZIndex(50)
-  pauseMenu:addLabel():setText("[--------------------------]"):setPosition(1, 1):setForeground(colors.black)
-  pauseMenu:addLabel():setText("Pause Menu"):setPosition(10, 1):setForeground(colors.gray)
-  local function showPause() borderMenu:show(); pauseMenu:show() end
-  local function hidePause() borderMenu:hide(); pauseMenu:hide() end
-  local pauseResumeBtn = pauseMenu:addButton()
-    :setText("Resume")
-    :setPosition(3, 3)
-    :setSize(24, 1)
-    :setBackground(colors.green)
-    :setForeground(colors.white)
-    :onClick(function() hidePause(); if M._onPauseResume then M._onPauseResume() end end)
-local pauseSaveBtn = pauseMenu:addButton()
-    :setText("Save Game")
-    :setPosition(3, 5)
-    :setSize(24, 1)
-    :setBackground(colors.blue)
-    :setForeground(colors.white)
-    :onClick(function() if M._onPauseSave then M._onPauseSave() end end)
-local pauseLoadBtn = pauseMenu:addButton()
-    :setText("Load Game")
-    :setPosition(3, 7)
-    :setSize(24, 1)
-    :setBackground(colors.yellow)
-    :setForeground(colors.white)
-    :onClick(function() if M._onPauseLoad then M._onPauseLoad() end end)
-local guideBtn = pauseMenu:addButton()
-    :setText("Guide")
-    :setPosition(3, 9)
-    :setSize(24, 1)
-    :setBackground(colors.lightBlue)
-    :setForeground(colors.white)
-    :onClick(function() if guideAPI and guideAPI.show then guideAPI.show() end end)
-local pauseQuitBtn = pauseMenu:addButton()
-    :setText("Quit to Main Menu")
-    :setPosition(3, 11)
-    :setSize(24, 1)
-    :setBackground(colors.red)
-    :setForeground(colors.white)
-    :onClick(function() if M._onPauseQuitToMenu then M._onPauseQuitToMenu() end end)
-
-pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen() end end)
   local invBtn = topBar:addButton()
       :setText("| INV |")
-      :setPosition(34, 3)
-      :setSize(7, 1)
       :setBackground(colors.gray)
       :setForeground(colors.white)
       :onClick(function() if M._onTopInv then M._onTopInv() end end)
   local craftBtn = topBar:addButton()
       :setText("| CRAFT |")
-      :setPosition(42, 3)
-      :setSize(9, 1)
       :setBackground(colors.gray)
       :setForeground(colors.orange)
       :onClick(function() if M._onTopCraft then M._onTopCraft() end end)
+
+  ----------------------------------------------------------------
+  -- Responsive layout (call M.reflow() after any terminal resize)
+  ----------------------------------------------------------------
+  local function layout()
+    W, H = term.getSize()
+    mainFrame:setSize(W-1, H)
+
+    -- top bar = full width, height 3
+    topBar:setSize(W, 3):setPosition(1, 1)
+
+    -- content area fills the rest
+    displayFrame:setSize(W+1, math.max(1, H - 2)):setPosition(0, 3)
+
+    -- inventory overlay centered; clamp to screen
+    local invW = math.min(42, math.max(24, W - 8))
+    local invH = math.min(16, math.max(16, H - 6))
+    inventoryOverlay:setSize(invW, invH)
+    inventoryOverlay:setPosition(math.floor((W - invW)/2) + 1, 3)
+    if invTitle then
+      invTitle:setPosition(2, 1)
+    end
+    -- move the close button to top-right of overlay
+    local closeBtnX = math.max(3, invW - 2)      -- keep within frame
+    invClose:setPosition(closeBtnX, 1) 
+
+    -- sidebar / dropdown sizing & visibility
+    if sidebar then
+      local sbW = math.max(16, math.min(22, math.floor(W * 0.30)))
+      sidebar:setSize(sbW, math.max(1, H - 2))
+      sidebar:setPosition(W, 4) -- start hidden at right edge; openSidebar slides it in
+      -- expose width for helpers
+      SIDEBAR_W = sbW
+    end
+    if navDD then
+      local ddW = math.min(20, math.max(14, W - 10))
+      navDD:setPosition(2, 2):setSize(ddW, 1)
+    end
+
+    -- HUD element anchors on top bar
+    timeLabel:setPosition(1, 1)
+    stageLabel:setPosition(25, 1)
+    moneyPlus:setPosition(27, 2):setSize(4, 1)
+    moneyLabel:setPosition(32, 2)
+    levelLabel:setPosition(1, 3)
+    levelBarLabel:setPosition(7, 3)
+
+    -- speed buttons aligned from right
+    local btnBase = math.max(6, W - 48) -- keep a minimum spacing on small screens
+    speedButtons["pause"]:setPosition(btnBase, 2)
+    speedButtons["normal"]:setPosition(btnBase + 4, 2)
+    speedButtons["2x"]:setPosition(btnBase + 8, 2)
+    rightBtn:setPosition(btnBase + 12, 2)
+
+    -- Pause panel ~ fixed size, centered
+    local pW, pH = 30, 14
+    borderMenu:setSize(pW, pH):setPosition(math.floor((W - pW)/2), math.max(3, math.floor((H - pH)/2)))
+    pauseMenu:setSize(pW - 2, pH - 2):setPosition(2, 2)
+    pauseResumeBtn:setPosition(3, 3):setSize(pW - 6, 1)
+    pauseSaveBtn:setPosition(3, 5):setSize(pW - 6, 1)
+    pauseLoadBtn:setPosition(3, 7):setSize(pW - 6, 1)
+    guideBtn:setPosition(3, 9):setSize(pW - 6, 1)
+    pauseQuitBtn:setPosition(3, 11):setSize(pW - 6, 1)
+
+    -- top action buttons
+    pauseBtn:setPosition(math.max(1, W - 50), 2):setSize(6, 1)
+    invBtn:setPosition(34, 3):setSize(7, 1)
+    craftBtn:setPosition(42, 3):setSize(9, 1)
+
+    -- recenter stage background for the new size
+    if M.refreshStageBackground then M.refreshStageBackground() end
+  end
+
+  layout()
+  M.reflow = layout
 
   -- Expose everything
   M.refs.mainFrame = mainFrame
@@ -1055,6 +1074,8 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
   M.refs.sidebar = sidebar
   M.refs.navDD = navDD
   M.refs.inventoryOverlay = inventoryOverlay
+  M.refs.invClose  = invClose
+  M.refs.invTitle     = invTitle
   M.refs.loading = buildLoading(mainFrame)
   M.refs.speedButtons = speedButtons
   M.refs.labels = {
@@ -1065,10 +1086,12 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
     border = borderMenu, content = pauseMenu,
     show = showPause, hide = hidePause, button = pauseBtn
   }
-  M.refs.frames = { root = mainFrame, topbar = topBar, display = displayFrame, overlay = inventoryOverlay, pause = pauseMenu }
+  M.refs.frames = {
+    root = mainFrame, topbar = topBar, display = displayFrame,
+    overlay = inventoryOverlay, pause = pauseMenu
+  }
 
-
-  -- available globally for legacy code that referenced globals
+  -- global back-compat
   _G.mainFrame        = mainFrame
   _G.topBar           = topBar
   _G.sidebar          = sidebar
@@ -1079,6 +1102,7 @@ pauseBtn:onClick(function() showPause(); if M._onPauseOpen then M._onPauseOpen()
 
   return M.refs
 end
+
 
 function M.showRoot()
   if M.refs.topBar then M.refs.topBar:show() end
@@ -1136,7 +1160,13 @@ function M.onPauseLoad(fn) M._onPauseLoad = fn end
 function M.onPauseSettings(fn) M._onPauseSettings = fn end
 function M.onPauseQuitToMenu(fn) M._onPauseQuitToMenu = fn end
 function M.onSkipNight(fn) M._onSkipNight = fn end
-function M.onStageChanged(fn) M._onStageChanged = fn end
+function M.onStageChanged(userFn)
+  M._onStageChanged = function(nextKey)
+    pcall(function() inventoryAPI.resetForStage(nextKey) end)
+    pcall(function() if upgradeAPI.setStage then upgradeAPI.setStage(nextKey) end end)
+    if type(userFn) == "function" then pcall(userFn, nextKey) end
+  end
+end
 
 function M.onTopInv(fn) M._onTopInv = fn end
 function M.onTopCraft(fn) M._onTopCraft = fn end
@@ -1280,6 +1310,7 @@ function M.openFinanceModal()
           if ok2 then
             refreshButtons()
             M.refreshBalances()
+            economyAPI.recordGain("loan_principal", d.principal, ("loan-$"..d.principal))
             M.toast(loansF, "Loan of $"..d.principal.." taken out for 7 days", 4, 11, colors.green, 2)
           else
             M.toast(loansF, res or "Active loan exists", 10, 11, colors.red, 1.5)
@@ -1335,6 +1366,7 @@ function M.openFinanceModal()
           local remaining = L.remaining_principal
           local ok, msg = economyAPI.payoffLoan(L.id)
           M.toast(loansF, ok and "Remaining Loan of $"..tonumber(remaining or 0).." Paid in Full." or (msg or "Failed"), 4, 11, ok and colors.green or colors.red, 1.8)
+          if ok then economyAPI.recordExpense("loan_payment", remaining, "Loan Payment") end
           refreshLoanButtons()
           refreshButtons()
           M.refreshBalances()
@@ -1421,8 +1453,8 @@ wBtn:onClick(function()
   if selectedAccount() == "savings" then wAct = "savings" else  wAct = "checking" end
   local ok, msg = economyAPI.withdraw(a, selectedAccount())  -- selected acct -> checking
   M.toast(bankF, ok and ("Withdrew $"..a.." from "..wAct) or (msg or "Failed"), ok and 9 or 8, 11, ok and colors.green or colors.red, 1.4)
-    if ok and dAct == "savings" then economyAPI.recordSavingsWithdraw(a) end
-  if ok and dAct == "checking" then economyAPI.recordSavingsDeposit(a) end
+    if ok and wAct == "savings" then economyAPI.recordSavingsWithdraw(a) end
+  if ok and wAct == "checking" then economyAPI.recordSavingsDeposit(a) end
   M.refreshBalances(); refreshButtons()
 end)
 
