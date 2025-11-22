@@ -1,0 +1,20 @@
+{
+  profile = {
+    last_loaded = "profile1",
+  },
+  general = {
+    difficulty = "medium",
+    tutorial = false,
+    autosave = true,
+    navigation = "dropdown",
+  },
+  version = {
+    installed_ref = "main",
+    current = "PixelCorp-latest-V0.2.0.7",
+    last_update_url = "",
+    channel = "stable",
+    installed_version = "dev",
+    selected_ref = "main",
+    last_update_epoch = 0,
+  },
+}
