@@ -141,9 +141,12 @@ end
 
 -- --- Toast manager (re-usable, single runner) ---
 local TextToasts = { items = {}, runner = nil, root = nil, max_active = 24 }
+<<<<<<< HEAD
 
 local function _now_ms() return os.epoch("utc") end
 
+=======
+>>>>>>> 52c40b5160b49a22fadef8e888dcdd0a911ebadf
 local function _startToastRunner(rootFrame)
   if TextToasts.runner then return end
   TextToasts.root = rootFrame
@@ -151,7 +154,11 @@ local function _startToastRunner(rootFrame)
   TextToasts.runner = th
   th:start(function()
     while true do
+<<<<<<< HEAD
       local now = _now_ms()
+=======
+      local now = os.clock()
+>>>>>>> 52c40b5160b49a22fadef8e888dcdd0a911ebadf
       for i = #TextToasts.items, 1, -1 do
         local it = TextToasts.items[i]
         if now >= (it.t1 or 0) then
@@ -198,6 +205,7 @@ function M.spawnToast(parent, text, x, y, color, duration)
       :setForeground(color or colors.white)
       :setZIndex(8)
 
+<<<<<<< HEAD
   local dur_ms = math.floor((tonumber(duration) or 2.0) * 1000)
   table.insert(TextToasts.items, { lbl = lbl, t1 = _now_ms() + dur_ms })
   return lbl
@@ -211,6 +219,12 @@ function M.clearToasts()
   end
 end
 
+=======
+  table.insert(TextToasts.items, { lbl = lbl, t1 = os.clock() + (tonumber(duration) or 2.0) })
+  return lbl
+end
+
+>>>>>>> 52c40b5160b49a22fadef8e888dcdd0a911ebadf
 local function _addDev(el) table.insert(DEV.els, el); return el end
 local function _clearDev()
   for _,el in ipairs(DEV.els) do
@@ -325,22 +339,35 @@ function M.refreshDevStage()
       if lvlNow < needLvl then return M.toast("displayFrame","Higher level required",18,5,colors.red,1.2) end
       if not hasLic then   return M.toast("displayFrame","Required license missing",18,5,colors.red,1.2) end
       if not economyAPI.canAfford(cost) then return M.toast("displayFrame","Not enough money",18,5,colors.red,1.2) end
+<<<<<<< HEAD
       M.toast(M.refs.displayFrame,"Stage unlocked!",18,5,colors.green,1.2)
       _stgBusy=true
       economyAPI.spendMoney(cost)
       state.player.progress = def.next
       stageAPI.unlock(def.next)
+=======
+      _stgBusy=true
+      economyAPI.spendMoney(cost)
+      state.player.progress = def.next
+>>>>>>> 52c40b5160b49a22fadef8e888dcdd0a911ebadf
       saveAPI.setState(state)
       local artKey = M.progressToArt(def.next)
       if M._onStageChanged then pcall(function() M._onStageChanged(def.next) end) end
         if stageAPI.setStage then stageAPI.setStage(artKey) end
         stageAPI.refreshBackground(M.refs.displayFrame)
+<<<<<<< HEAD
+=======
+      M.toast("displayFrame","Stage unlocked!",18,5,colors.green,1.2)
+>>>>>>> 52c40b5160b49a22fadef8e888dcdd0a911ebadf
       M.refreshDevStage()
       pcall(function() if refreshUI then refreshUI() end end)
       _stgBusy=false
     end)
+<<<<<<< HEAD
     if not TextToasts.runner then _startToastRunner(M.refs.mainFrame or parent)
     elseif not TextToasts.root then _startToastRunner(M.refs.mainFrame or parent) end  
+=======
+>>>>>>> 52c40b5160b49a22fadef8e888dcdd0a911ebadf
   end
 end
 
@@ -1151,6 +1178,7 @@ function M.onPauseLoad(fn) M._onPauseLoad = fn end
 function M.onPauseSettings(fn) M._onPauseSettings = fn end
 function M.onPauseQuitToMenu(fn) M._onPauseQuitToMenu = fn end
 function M.onSkipNight(fn) M._onSkipNight = fn end
+<<<<<<< HEAD
 function M.onStageChanged(userFn)
   M._onStageChanged = function(nextKey)
     pcall(function() inventoryAPI.resetForStage(nextKey) end)
@@ -1158,6 +1186,9 @@ function M.onStageChanged(userFn)
     if type(userFn) == "function" then pcall(userFn, nextKey) end
   end
 end
+=======
+function M.onStageChanged(fn) M._onStageChanged = fn end
+>>>>>>> 52c40b5160b49a22fadef8e888dcdd0a911ebadf
 
 function M.onTopInv(fn) M._onTopInv = fn end
 function M.onTopCraft(fn) M._onTopCraft = fn end
